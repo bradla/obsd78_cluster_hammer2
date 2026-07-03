@@ -1103,6 +1103,182 @@ hammer2_ioctl_volume_list(hammer2_inode_t *ip, void *data)
 	return (error);
 }
 
+/*
+ * Retrieve information about a remote.
+ *
+ * The remote configuration is stored persistently in the volume header
+ * copyinfo[] array.  copyid 0 is reserved (the local node), so valid
+ * user-configured slots are 1..HAMMER2_COPYID_COUNT-1.
+ */
+static int
+hammer2_ioctl_remote_scan(hammer2_inode_t *ip, void *data)
+{
+	hammer2_dev_t *hmp;
+	hammer2_ioc_remote_t *remote = data;
+	int copyid = remote->copyid;
+
+	hmp = ip->pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+
+	if (copyid < 0 || copyid >= HAMMER2_COPYID_COUNT)
+		return (EINVAL);
+
+	hammer2_voldata_lock(hmp);
+	remote->copy1 = hmp->voldata.copyinfo[copyid];
+	hammer2_voldata_unlock(hmp);
+
+	/*
+	 * Adjust nextid (GET only), skipping to the next populated slot.
+	 */
+	while (++copyid < HAMMER2_COPYID_COUNT &&
+	    hmp->voldata.copyinfo[copyid].copyid == 0) {
+		;
+	}
+	if (copyid == HAMMER2_COPYID_COUNT)
+		remote->nextid = -1;
+	else
+		remote->nextid = copyid;
+
+	return (0);
+}
+
+/*
+ * Add a new remote entry.  copyid < 0 means "allocate the first free slot".
+ */
+static int
+hammer2_ioctl_remote_add(hammer2_inode_t *ip, void *data)
+{
+	hammer2_ioc_remote_t *remote = data;
+	hammer2_pfs_t *pmp = ip->pmp;
+	hammer2_dev_t *hmp;
+	int copyid = remote->copyid;
+	int error = 0;
+
+	hmp = pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+	if (copyid >= HAMMER2_COPYID_COUNT)
+		return (EINVAL);
+
+	hammer2_voldata_lock(hmp);
+	if (copyid < 0) {
+		for (copyid = 1; copyid < HAMMER2_COPYID_COUNT; ++copyid) {
+			if (hmp->voldata.copyinfo[copyid].copyid == 0)
+				break;
+		}
+		if (copyid == HAMMER2_COPYID_COUNT) {
+			error = ENOSPC;
+			goto failed;
+		}
+	}
+	hammer2_voldata_modify(hmp);
+	remote->copy1.copyid = copyid;
+	hmp->voldata.copyinfo[copyid] = remote->copy1;
+	hammer2_volconf_update(hmp, copyid);
+failed:
+	hammer2_voldata_unlock(hmp);
+	return (error);
+}
+
+/*
+ * Delete an existing remote entry.  copyid < 0 means "match by path".
+ */
+static int
+hammer2_ioctl_remote_del(hammer2_inode_t *ip, void *data)
+{
+	hammer2_ioc_remote_t *remote = data;
+	hammer2_pfs_t *pmp = ip->pmp;
+	hammer2_dev_t *hmp;
+	int copyid = remote->copyid;
+	int error = 0;
+
+	hmp = pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+	if (copyid >= HAMMER2_COPYID_COUNT)
+		return (EINVAL);
+	remote->copy1.path[sizeof(remote->copy1.path) - 1] = 0;
+	hammer2_voldata_lock(hmp);
+	if (copyid < 0) {
+		for (copyid = 1; copyid < HAMMER2_COPYID_COUNT; ++copyid) {
+			if (hmp->voldata.copyinfo[copyid].copyid == 0)
+				continue;
+			if (strcmp(remote->copy1.path,
+			    hmp->voldata.copyinfo[copyid].path) == 0) {
+				break;
+			}
+		}
+		if (copyid == HAMMER2_COPYID_COUNT) {
+			error = ENOENT;
+			goto failed;
+		}
+	}
+	hammer2_voldata_modify(hmp);
+	hmp->voldata.copyinfo[copyid].copyid = 0;
+	hammer2_volconf_update(hmp, copyid);
+failed:
+	hammer2_voldata_unlock(hmp);
+	return (error);
+}
+
+/*
+ * Replace an existing remote entry.
+ */
+static int
+hammer2_ioctl_remote_rep(hammer2_inode_t *ip, void *data)
+{
+	hammer2_ioc_remote_t *remote = data;
+	hammer2_dev_t *hmp;
+	int copyid = remote->copyid;
+
+	hmp = ip->pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+	if (copyid < 0 || copyid >= HAMMER2_COPYID_COUNT)
+		return (EINVAL);
+
+	hammer2_voldata_lock(hmp);
+	hammer2_voldata_modify(hmp);
+	/*hammer2_volconf_update(hmp, copyid);*/
+	hammer2_voldata_unlock(hmp);
+
+	return (0);
+}
+
+/*
+ * Retrieve communications socket.  Not supported (matches upstream).
+ */
+static int
+hammer2_ioctl_socket_get(hammer2_inode_t *ip, void *data)
+{
+	return (EOPNOTSUPP);
+}
+
+/*
+ * Set communications socket for a connection.  In upstream DragonFly this is
+ * a no-op; the actual connection is established at mount time via the
+ * cluster_fd -> hammer2_cluster_reconnect() path.
+ */
+static int
+hammer2_ioctl_socket_set(hammer2_inode_t *ip, void *data)
+{
+	hammer2_ioc_remote_t *remote = data;
+	hammer2_dev_t *hmp;
+	int copyid = remote->copyid;
+
+	hmp = ip->pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+	if (copyid < 0 || copyid >= HAMMER2_COPYID_COUNT)
+		return (EINVAL);
+
+	hammer2_voldata_lock(hmp);
+	hammer2_voldata_unlock(hmp);
+
+	return (0);
+}
+
 int
 hammer2_ioctl_impl(struct vnode *vp, unsigned long com, void *data,
     int fflag, struct ucred *cred)
@@ -1152,6 +1328,24 @@ hammer2_ioctl_impl(struct vnode *vp, unsigned long com, void *data,
 		break;
 	case HAMMER2IOC_VOLUME_LIST:
 		error = hammer2_ioctl_volume_list(ip, data);
+		break;
+	case HAMMER2IOC_REMOTE_SCAN:
+		error = hammer2_ioctl_remote_scan(ip, data);
+		break;
+	case HAMMER2IOC_REMOTE_ADD:
+		error = hammer2_ioctl_remote_add(ip, data);
+		break;
+	case HAMMER2IOC_REMOTE_DEL:
+		error = hammer2_ioctl_remote_del(ip, data);
+		break;
+	case HAMMER2IOC_REMOTE_REP:
+		error = hammer2_ioctl_remote_rep(ip, data);
+		break;
+	case HAMMER2IOC_SOCKET_GET:
+		error = hammer2_ioctl_socket_get(ip, data);
+		break;
+	case HAMMER2IOC_SOCKET_SET:
+		error = hammer2_ioctl_socket_set(ip, data);
 		break;
 	//case HAMMER2IOC_VOLUME_LIST2:
 	//	error = hammer2_ioctl_volume_list2(ip, data);

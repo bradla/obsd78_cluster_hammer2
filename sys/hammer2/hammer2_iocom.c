@@ -38,6 +38,9 @@
 #include <sys/mount.h>
 #include <sys/uuid.h>
 #include <sys/socket.h>
+#include <sys/socketvar.h>	/* soreceive/sosend, struct socket */
+#include <sys/uio.h>		/* struct uio for kernel socket I/O */
+#include <sys/kthread.h>	/* kthread_create/kthread_exit */
 #include <sys/proc.h>
 /* <sys/file.h> is unguarded and is pulled in by hammer2.h below. */
 

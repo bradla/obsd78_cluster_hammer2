@@ -40,6 +40,7 @@
 
 #include <sys/sysctl.h>
 #include <sys/specdev.h>
+#include <sys/filedesc.h>	/* fd_getfile() for cluster_fd */
 
 
 #define	NULLVP	((struct vnode *)NULL)
@@ -934,6 +935,32 @@ next_hmp:
 		 */
 		hammer2_update_pmps(hmp);
 		hammer2_bulkfree_init(hmp);
+
+		/*
+		 * Initialize the cluster-management dmsg interface.  If the
+		 * mount program supplied a cluster descriptor (from the
+		 * hammer2 service daemon), install it and initiate the
+		 * LNK_CONN handshake.  Root mounts and plain local mounts pass
+		 * cluster_fd == -1 and skip the connect.
+		 *
+		 * NOTE: fd_getfile() returns the file with a reference held,
+		 *	 which hammer2_cluster_reconnect() takes ownership of.
+		 *
+		 * NOTE: The kdmsg read/write service threads are not yet
+		 *	 enabled (see kdmsg.c), so the descriptor is installed
+		 *	 and the LNK_CONN message is queued, but no traffic
+		 *	 flows across the socket until that support lands.
+		 */
+		hammer2_iocom_init(hmp);
+		if (args->cluster_fd >= 0) {
+			struct file *fp;
+
+			fp = fd_getfile(p->p_fd, args->cluster_fd);
+			if (fp)
+				hammer2_cluster_reconnect(hmp, fp);
+			else
+				hprintf("bad cluster_fd %d\n", args->cluster_fd);
+		}
 	} else {
 		/* hmp->devvp_list is already constructed. */
 		hammer2_cleanup_devvp(&devvpl);

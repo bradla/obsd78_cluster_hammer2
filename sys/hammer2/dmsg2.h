@@ -814,8 +814,8 @@ RB_PROTOTYPE(kdmsg_state_tree, kdmsg_state, rbnode, kdmsg_state_cmp);
 struct kdmsg_iocom {
 	struct malloc_type	*mmsg;
 	struct file		*msg_fp;	/* cluster pipe->userland */
-	thread_t		msgrd_td;	/* cluster thread */
-	thread_t		msgwr_td;	/* cluster thread */
+	struct proc		*msgrd_td;	/* cluster read thread (OpenBSD) */
+	struct proc		*msgwr_td;	/* cluster write thread (OpenBSD) */
 	int			msg_ctl;	/* wakeup flags */
 	int			msg_seq;	/* cluster msg sequence id */
 	uint32_t		flags;
