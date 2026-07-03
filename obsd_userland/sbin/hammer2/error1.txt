@@ -1,0 +1,73 @@
+cc -O2 -pipe  -I../../sys -I../../lib/libdmsg    -DZLIB_CONST -pthread -Wno-deprecated-declarations  -MD -MP  -c cmd_remote.c
+cmd_remote.c:41:2: error: unknown type name 'hammer2_ioc_remote_t'; did you mean 'hammer2_ioc_inode_t'?
+   41 |         hammer2_ioc_remote_t remote;
+      |         ^~~~~~~~~~~~~~~~~~~~
+      |         hammer2_ioc_inode_t
+../../sys/fs/hammer2/hammer2_ioctl.h:93:34: note: 'hammer2_ioc_inode_t' declared here
+   93 | typedef struct hammer2_ioc_inode hammer2_ioc_inode_t;
+      |                                  ^
+cmd_remote.c:48:9: error: no member named 'copyid' in 'struct hammer2_ioc_inode'
+   48 |         remote.copyid = -1;
+      |         ~~~~~~ ^
+cmd_remote.c:49:9: error: no member named 'fd' in 'struct hammer2_ioc_inode'
+   49 |         remote.fd = -1;
+      |         ~~~~~~ ^
+cmd_remote.c:50:35: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   50 |         if (strlen(url) >= sizeof(remote.copy1.path)) {
+      |                                   ~~~~~~ ^
+cmd_remote.c:55:25: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   55 |         snprintf((char*)remote.copy1.path, sizeof(remote.copy1.path), "%s",
+      |                         ~~~~~~ ^
+cmd_remote.c:55:51: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   55 |         snprintf((char*)remote.copy1.path, sizeof(remote.copy1.path), "%s",
+      |                                                   ~~~~~~ ^
+cmd_remote.c:57:16: error: use of undeclared identifier 'HAMMER2IOC_REMOTE_ADD'
+   57 |         if (ioctl(fd, HAMMER2IOC_REMOTE_ADD, &remote) < 0) {
+      |                       ^
+cmd_remote.c:68:2: error: unknown type name 'hammer2_ioc_remote_t'; did you mean 'hammer2_ioc_inode_t'?
+   68 |         hammer2_ioc_remote_t remote;
+      |         ^~~~~~~~~~~~~~~~~~~~
+      |         hammer2_ioc_inode_t
+../../sys/fs/hammer2/hammer2_ioctl.h:93:34: note: 'hammer2_ioc_inode_t' declared here
+   93 | typedef struct hammer2_ioc_inode hammer2_ioc_inode_t;
+      |                                  ^
+cmd_remote.c:75:9: error: no member named 'copyid' in 'struct hammer2_ioc_inode'
+   75 |         remote.copyid = -1;
+      |         ~~~~~~ ^
+cmd_remote.c:76:9: error: no member named 'fd' in 'struct hammer2_ioc_inode'
+   76 |         remote.fd = -1;
+      |         ~~~~~~ ^
+cmd_remote.c:77:35: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   77 |         if (strlen(url) >= sizeof(remote.copy1.path)) {
+      |                                   ~~~~~~ ^
+cmd_remote.c:82:25: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   82 |         snprintf((char*)remote.copy1.path, sizeof(remote.copy1.path), "%s",
+      |                         ~~~~~~ ^
+cmd_remote.c:82:51: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+   82 |         snprintf((char*)remote.copy1.path, sizeof(remote.copy1.path), "%s",
+      |                                                   ~~~~~~ ^
+cmd_remote.c:84:16: error: use of undeclared identifier 'HAMMER2IOC_REMOTE_DEL'
+   84 |         if (ioctl(fd, HAMMER2IOC_REMOTE_DEL, &remote) < 0) {
+      |                       ^
+cmd_remote.c:95:2: error: unknown type name 'hammer2_ioc_remote_t'; did you mean 'hammer2_ioc_inode_t'?
+   95 |         hammer2_ioc_remote_t remote;
+      |         ^~~~~~~~~~~~~~~~~~~~
+      |         hammer2_ioc_inode_t
+../../sys/fs/hammer2/hammer2_ioctl.h:93:34: note: 'hammer2_ioc_inode_t' declared here
+   93 | typedef struct hammer2_ioc_inode hammer2_ioc_inode_t;
+      |                                  ^
+cmd_remote.c:104:17: error: no member named 'copyid' in 'struct hammer2_ioc_inode'
+  104 |         while ((remote.copyid = remote.nextid) >= 0) {
+      |                 ~~~~~~ ^
+cmd_remote.c:104:33: error: no member named 'nextid' in 'struct hammer2_ioc_inode'
+  104 |         while ((remote.copyid = remote.nextid) >= 0) {
+      |                                 ~~~~~~ ^
+cmd_remote.c:105:17: error: use of undeclared identifier 'HAMMER2IOC_REMOTE_SCAN'
+  105 |                 if (ioctl(fd, HAMMER2IOC_REMOTE_SCAN, &remote) < 0) {
+      |                               ^
+cmd_remote.c:110:14: error: no member named 'copy1' in 'struct hammer2_ioc_inode'
+  110 |                 if (remote.copy1.copyid == 0)
+      |                     ~~~~~~ ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+*** Error 1 in /usr/src/obsd_userland/sbin/hammer2 (<sys.mk>:87 'cmd_remote.o')

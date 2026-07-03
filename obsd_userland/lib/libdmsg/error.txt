@@ -1,0 +1,223 @@
+cc -O2 -pipe -g -I/usr/src/obsd_userland/lib/libdmsg/../../sys -pthread -Wno-deprecated-declarations  -MD -MP  -c debug.c -o debug.o
+cc -O2 -pipe -g -I/usr/src/obsd_userland/lib/libdmsg/../../sys -pthread -Wno-deprecated-declarations  -MD -MP  -c debug.c -o debug.o
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:41:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:236:25: error: use of undeclared identifier 'MAXCOMLEN'
+  236 |     char        td_comm[MAXCOMLEN+1]; /* typ 16+1 bytes */
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:451:10: error: field has incomplete type 'uuid_t' (aka 'struct uuid')
+  451 |         uuid_t          media_id;       /* media configuration id */
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:416:16: note: forward declaration of 'struct uuid'
+  416 | typedef struct uuid uuid_t;
+      |                ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:452:10: error: field has incomplete type 'uuid_t' (aka 'struct uuid')
+  452 |         uuid_t          peer_id;        /* unique peer uuid */
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:416:16: note: forward declaration of 'struct uuid'
+  416 | typedef struct uuid uuid_t;
+      |                ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:453:10: error: field has incomplete type 'uuid_t' (aka 'struct uuid')
+  453 |         uuid_t          reserved01;
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:416:16: note: forward declaration of 'struct uuid'
+  416 | typedef struct uuid uuid_t;
+      |                ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:540:10: error: field has incomplete type 'uuid_t' (aka 'struct uuid')
+  540 |         uuid_t          peer_id;
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:416:16: note: forward declaration of 'struct uuid'
+  416 | typedef struct uuid uuid_t;
+      |                ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:541:10: error: field has incomplete type 'uuid_t' (aka 'struct uuid')
+  541 |         uuid_t          pfs_id;         /* unique pfs id */
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:416:16: note: forward declaration of 'struct uuid'
+  416 | typedef struct uuid uuid_t;
+      |                ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:152:8: error: redefinition of 'globaldata'
+  152 | struct globaldata {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:152:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  152 | struct globaldata {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:206:8: error: redefinition of 'thread'
+  206 | struct thread {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:206:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  206 | struct thread {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:236:25: error: use of undeclared identifier 'MAXCOMLEN'
+  236 |     char        td_comm[MAXCOMLEN+1]; /* typ 16+1 bytes */
+      |                         ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:253:8: error: redefinition of 'dmsg_hdr'
+  253 | struct dmsg_hdr {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:253:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  253 | struct dmsg_hdr {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:421:8: error: redefinition of 'dmsg_lnk_auth'
+  421 | struct dmsg_lnk_auth {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:421:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  421 | struct dmsg_lnk_auth {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:449:8: error: redefinition of 'dmsg_lnk_conn'
+  449 | struct dmsg_lnk_conn {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:449:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  449 | struct dmsg_lnk_conn {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:484:8: error: redefinition of 'dmsg_media_block'
+  484 | struct dmsg_media_block {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:484:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  484 | struct dmsg_media_block {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:538:8: error: redefinition of 'dmsg_lnk_span'
+  538 | struct dmsg_lnk_span {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:538:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  538 | struct dmsg_lnk_span {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:577:8: error: redefinition of 'dmsg_dbg_shell'
+  577 | struct dmsg_dbg_shell {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:577:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  577 | struct dmsg_dbg_shell {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:634:8: error: redefinition of 'dmsg_blk_open'
+  634 | struct dmsg_blk_open {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:634:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  634 | struct dmsg_blk_open {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:647:8: error: redefinition of 'dmsg_blk_error'
+  647 | struct dmsg_blk_error {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:647:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  647 | struct dmsg_blk_error {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:655:8: error: redefinition of 'dmsg_blk_read'
+  655 | struct dmsg_blk_read {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:655:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  655 | struct dmsg_blk_read {
+      |        ^
+In file included from debug.c:35:
+In file included from ./dmsg_local.h:69:
+In file included from ./dmsg.h:38:
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:665:8: error: redefinition of 'dmsg_blk_write'
+  665 | struct dmsg_blk_write {
+      |        ^
+./dmsg_local.h:41:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   41 | #include <sys/dmsg.h>
+      |          ^
+./dmsg.h:38:10: note: '/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h' included multiple times, additional include site here
+   38 | #include <sys/dmsg.h>
+      |          ^
+/usr/src/obsd_userland/lib/libdmsg/../../sys/sys/dmsg.h:665:8: note: unguarded header; consider using #ifdef guards or #pragma once
+  665 | struct dmsg_blk_write {
+      |        ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+*** Error 1 in /usr/src/obsd_userland/lib/libdmsg (<bsd.lib.mk>:40 'debug.o': @cc -O2 -pipe -g -I/usr/src/obsd_userland/lib/libdmsg/../../sy...)
