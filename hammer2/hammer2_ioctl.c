@@ -1067,7 +1067,7 @@ static int
 hammer2_ioctl_volume_list(hammer2_inode_t *ip, void *data)
 {
 	hammer2_ioc_volume_list_t *vollist = data;
-	hammer2_ioc_volume_t *entry;
+	hammer2_ioc_volume_t entry;
 	hammer2_volume_t *vol;
 	hammer2_dev_t *hmp = ip->pmp->pfs_hmps[0];
 	int i, error = 0, cnt = 0;
@@ -1079,12 +1079,20 @@ hammer2_ioctl_volume_list(hammer2_inode_t *ip, void *data)
 		if (cnt >= vollist->nvolumes)
 			break;
 		vol = &hmp->volumes[i];
-		entry = &vollist->volumes[cnt];
+		bzero(&entry, sizeof(entry));
 		/* Copy hammer2_volume_t fields. */
-		entry->id = vol->id;
-		bcopy(vol->dev->path, entry->path, sizeof(entry->path));
-		entry->offset = vol->offset;
-		entry->size = vol->size;
+		entry.id = vol->id;
+		bcopy(vol->dev->path, entry.path, sizeof(entry.path));
+		entry.offset = vol->offset;
+		entry.size = vol->size;
+		/*
+		 * vollist->volumes is a userspace pointer; the array entries
+		 * must be written with copyout(), not dereferenced directly
+		 * (doing so faults "user address ... in supervisor mode").
+		 */
+		error = copyout(&entry, &vollist->volumes[cnt], sizeof(entry));
+		if (error)
+			return (error);
 		cnt++;
 	}
 	vollist->nvolumes = cnt;
