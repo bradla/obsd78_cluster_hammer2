@@ -41,6 +41,7 @@
 
 //#include <sys/filio.h>
 #include <sys/fcntl.h>
+#include <sys/filedesc.h>	/* fd_getfile() for HAMMER2IOC_RECLUSTER */
 #include <sys/dkio.h>
 #include <sys/disklabel.h>
 
@@ -279,8 +280,12 @@ hammer2_ioctl_pfs_create(hammer2_inode_t *ip, void *data)
 	if (hammer2_ioctl_pfs_lookup(ip, pfs) == 0)
 		return (EEXIST);
 
-	if (pfs->pfs_type != HAMMER2_PFSTYPE_MASTER)
-		return (EOPNOTSUPP);
+	/*
+	 * Any PFS type is allowed (MASTER, SLAVE, ...) -- the pfs_type and
+	 * pfs_clid from the ioctl are stored below, which is how a second
+	 * cluster node (e.g. a SLAVE sharing a clid) is created.  DragonFly
+	 * imposes no restriction here.
+	 */
 
 	hammer2_trans_init(hmp->spmp, HAMMER2_TRANS_ISFLUSH);
 	mtid = hammer2_trans_sub(hmp->spmp);
@@ -1279,6 +1284,36 @@ hammer2_ioctl_socket_set(hammer2_inode_t *ip, void *data)
 	return (0);
 }
 
+/*
+ * Install a cluster-messaging descriptor handed to us by the userland
+ * "hammer2 service" daemon (the stock master_reconnect() path).  The daemon
+ * creates a bidirectional local channel, keeps one end, and passes the other
+ * end's descriptor here; we install it as the kernel's dmsg link.
+ *
+ * NOTE: On OpenBSD the daemon uses socketpair(AF_UNIX) rather than pipe()
+ *	 (OpenBSD pipes are unidirectional), so recl->fd is a socket that the
+ *	 kdmsg soreceive/sosend threads can drive.  fd_getfile() returns the
+ *	 file with a reference which hammer2_cluster_reconnect() takes over.
+ */
+static int
+hammer2_ioctl_recluster(hammer2_inode_t *ip, void *data)
+{
+	hammer2_ioc_recluster_t *recl = data;
+	hammer2_dev_t *hmp;
+	struct file *fp;
+
+	hmp = ip->pmp->pfs_hmps[0];
+	if (hmp == NULL)
+		return (EINVAL);
+
+	fp = fd_getfile(curproc->p_fd, recl->fd);
+	if (fp == NULL)
+		return (EINVAL);
+
+	hammer2_cluster_reconnect(hmp, fp);
+	return (0);
+}
+
 int
 hammer2_ioctl_impl(struct vnode *vp, unsigned long com, void *data,
     int fflag, struct ucred *cred)
@@ -1346,6 +1381,9 @@ hammer2_ioctl_impl(struct vnode *vp, unsigned long com, void *data,
 		break;
 	case HAMMER2IOC_SOCKET_SET:
 		error = hammer2_ioctl_socket_set(ip, data);
+		break;
+	case HAMMER2IOC_RECLUSTER:
+		error = hammer2_ioctl_recluster(ip, data);
 		break;
 	//case HAMMER2IOC_VOLUME_LIST2:
 	//	error = hammer2_ioctl_volume_list2(ip, data);

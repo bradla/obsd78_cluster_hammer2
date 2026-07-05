@@ -153,7 +153,14 @@ typedef struct hammer2_inoq_head hammer2_inoq_head_t;
 
 #define HAMMER2_DIRTYCHAIN_MASK		0x7FFFFFFF
 #define HAMMER2_DIRTYCHAIN_WAITING	0x80000000
-#define PINTERLOCKED	0x00000400	/* Interlocked tsleep */
+/*
+ * DragonFly's PINTERLOCKED is a tsleep flag paired with tsleep_interlock().
+ * OpenBSD has no such flag and tsleep() KASSERTs that the priority contains
+ * no bits outside (PRIMASK | PCATCH) -- so the old 0x400 value paniced the
+ * instant any thr_wait/xop-idle sleep actually ran.  tsleep_interlock() is a
+ * no-op in the compat layer, so PINTERLOCKED must simply be sleep priority 0.
+ */
+#define PINTERLOCKED	0		/* OpenBSD: plain tsleep priority 0 */
 
 /*
  * The chain structure tracks a portion of the media topology from the
@@ -375,6 +382,7 @@ struct hammer2_chain {
 	unsigned int		lockcnt;
 	int		error;			/* on-lock data error state */
 	int		cache_index;		/* heur speeds up lookup */
+	TAILQ_ENTRY(hammer2_chain) dbg_entry;	/* TEMP leak-hunt: live list */
 };
 
 typedef struct hammer2_chain hammer2_chain_t;
@@ -938,8 +946,8 @@ struct hammer2_xop_head {
 	hammer2_inode_t		*ip3;
 	hammer2_inode_t		*ip4;
 	hammer2_io_t		*focus_dio;
-	uint32_t		run_mask;
-	uint32_t		chk_mask;
+	uint64_t		run_mask;	/* 64-bit: holds FEED bit (1<<32) */
+	uint64_t		chk_mask;
 	int			flags;
 	int			fifo_size;
 	int			state;
@@ -1711,6 +1719,7 @@ void hammer2_chain_init(hammer2_chain_t *);
 void hammer2_chain_ref(hammer2_chain_t *);
 void hammer2_chain_ref_hold(hammer2_chain_t *);
 void hammer2_chain_drop(hammer2_chain_t *);
+void hammer2_chain_dbg_dump(const char *);	/* TEMP leak-hunt */
 void hammer2_chain_unhold(hammer2_chain_t *);
 void hammer2_chain_drop_unhold(hammer2_chain_t *);
 void hammer2_chain_rehold(hammer2_chain_t *);
@@ -1768,8 +1777,7 @@ void hammer2_xop_inode_flush(hammer2_xop_t *, void *, int);
  * hammer2_iocom.c
  */
 void hammer2_iocom_init(hammer2_dev_t *hmp);
-//void hammer2_iocom_uninit(hammer2_dev_t *hmp);
-void hammer2_iocom_uninit(hammer2_pfs_t *);
+void hammer2_iocom_uninit(hammer2_dev_t *hmp);
 void hammer2_cluster_reconnect(hammer2_dev_t *hmp, struct file *fp);
 void hammer2_volconf_update(hammer2_dev_t *hmp, int index);
 
@@ -1872,9 +1880,12 @@ void hammer2_xop_setip3(hammer2_xop_head_t *, hammer2_inode_t *);
 void hammer2_xop_setip4(hammer2_xop_head_t *, hammer2_inode_t *);
 void hammer2_xop_start(hammer2_xop_head_t *, hammer2_xop_desc_t *);
 void hammer2_xop_start_except(hammer2_xop_head_t *, hammer2_xop_desc_t *, int);
-void hammer2_xop_retire(hammer2_xop_head_t *, uint32_t);
+void hammer2_xop_retire(hammer2_xop_head_t *, uint64_t);
 int hammer2_xop_feed(hammer2_xop_head_t *, hammer2_chain_t *, int, int);
 int hammer2_xop_collect(hammer2_xop_head_t *, int);
+void hammer2_xop_helper_create(hammer2_pfs_t *);
+void hammer2_xop_helper_cleanup(hammer2_pfs_t *);
+void hammer2_primary_xops_thread(void *arg);
 
 /*
  * hammer2 kernel-thread management (hammer2_admin.c)
@@ -2044,8 +2055,13 @@ hammer2_xop_pdata(hammer2_xop_head_t *xop)
 static __inline void
 hammer2_assert_cluster(const hammer2_cluster_t *cluster)
 {
-	/* Currently a valid cluster can only have 1 nchains. */
-	KASSERTMSG(cluster->nchains == 1,
+	/*
+	 * Multi-node clusters (nchains > 1) are allowed: PFSs sharing a
+	 * pfs_clid are aggregated by hammer2_pfsalloc() and the XOP layer
+	 * dispatches per-node.  Keep a sanity bound only.
+	 */
+	KASSERTMSG(cluster->nchains >= 0 &&
+	    cluster->nchains <= HAMMER2_MAXCLUSTER,
 	    "unexpected cluster nchains %d", cluster->nchains);
 }
 

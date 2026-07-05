@@ -79,14 +79,20 @@
  * silently drop them.  x86_atomic_setbits_u64 comes from <machine/atomic.h>.
  */
 #define atomic_set_64		x86_atomic_setbits_u64
+#define atomic_clear_64		x86_atomic_clearbits_u64
 
 #define atomic_cmpset_int(ptr, old, new)	\
 	(atomic_cas_uint((ptr), (old), (new)) == (old))
 
 #define atomic_cmpset_32	atomic_cmpset_int
 
+/*
+ * Must return a SUCCESS boolean (like atomic_cmpset_int above), not the old
+ * value -- atomic_fetchadd_64() loops on !atomic_cmpset_64() and callers test
+ * it as a boolean.  __sync_bool_compare_and_swap returns true iff it swapped.
+ */
 #define atomic_cmpset_64(ptr, old, new)		\
-	(__sync_val_compare_and_swap((ptr), (old), (new)))
+	(__sync_bool_compare_and_swap((ptr), (old), (new)))
 
 //typedef int (*hammer2_chain_scan_b)(hammer2_chain_t *, void *);
 
@@ -145,8 +151,10 @@ atomic_fetchadd_64(volatile uint64_t *p, uint64_t v)
  */
 #include <sys/kthread.h>
 
-/* PINTERLOCKED is already defined by hammer2.h (0x400); under OpenBSD tsleep
- * it acts as sleep priority 0, which is fine for the flag-wait loops. */
+/* PINTERLOCKED is defined as plain sleep priority 0 in hammer2.h.  OpenBSD's
+ * tsleep() KASSERTs (priority & ~(PRIMASK|PCATCH)) == 0, so it cannot carry a
+ * DragonFly-style interlock flag -- the old 0x400 value paniced the moment a
+ * thr_wait/xop sleep ran.  tsleep_interlock() is therefore a no-op. */
 #define tsleep_interlock(chan, flags)	do { } while (0)
 
 #endif /* !_FS_HAMMER2_COMPAT_H_ */

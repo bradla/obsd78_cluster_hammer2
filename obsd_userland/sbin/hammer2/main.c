@@ -47,6 +47,7 @@
 int VerboseOpt;
 int QuietOpt;
 int DebugOpt;
+int ForceOpt;
 int NormalExit = 1;	/* set to 0 by hammer2_demon() in the daemon child */
 /* DMsgDebugOpt is defined by libdmsg (msg.c); declared extern in hammer2.h */
 int RecurseOpt;
@@ -61,14 +62,27 @@ main(int ac, char **av)
 	const char *uuid_str = NULL;
 	char *opt;
 	int pfs_type = HAMMER2_PFSTYPE_NONE;
+	int all_opt = 0;
 	int ecode = 0;
 	int ch;
 
 	/*
 	 * Core options
 	 */
-	while ((ch = getopt(ac, av, "m:rs:t:u:vq")) != -1) {
+	while ((ch = getopt(ac, av, "adfm:rs:t:u:vq")) != -1) {
 		switch(ch) {
+		case 'a':
+			all_opt = 1;
+			break;
+		case 'd':
+			/* -d enables debug; a second -d bumps dmsg verbosity. */
+			if (DebugOpt)
+				++DMsgDebugOpt;
+			DebugOpt = 1;
+			break;
+		case 'f':
+			ForceOpt = 1;
+			break;
 		case 'm':
 			MemOpt = strtoul(optarg, &opt, 0);
 			switch(*opt) {
@@ -413,7 +427,7 @@ main(int ac, char **av)
 		}
 		ecode = cmd_remote_disconnect(sel_path, av[1]);
 	} else if (strcmp(av[0], "status") == 0) {
-		ecode = cmd_remote_status(sel_path, 0);
+		ecode = cmd_remote_status(sel_path, all_opt);
 	} else if (strcmp(av[0], "service") == 0) {
 		/* Start the cluster messaging service daemon. */
 		ecode = cmd_service();
@@ -440,7 +454,15 @@ main(int ac, char **av)
 		usage(1);
 	}
 
-	return (ecode);
+	/*
+	 * In debug mode hammer2_demon() ran the service as a foreground pthread
+	 * and set NormalExit = 0.  We must pthread_exit() instead of returning,
+	 * otherwise the process exits and kills the service thread.
+	 */
+	if (NormalExit)
+		return (ecode);
+	else
+		pthread_exit(NULL);
 }
 
 static

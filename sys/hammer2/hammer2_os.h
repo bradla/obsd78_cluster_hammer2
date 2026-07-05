@@ -139,6 +139,8 @@ hammer2_lkc_wakeup(hammer2_lkc_t *c)
 struct rrwlock_wrapper {
 	struct rrwlock lock;
 	int refs;
+	const char *lfile;	/* TEMP DIAG: where last locked */
+	int lline;
 };
 typedef struct rrwlock_wrapper hammer2_mtx_t;
 
@@ -156,19 +158,86 @@ hammer2_mtx_init_recurse(hammer2_mtx_t *p, const char *s)
 	rrw_init(&p->lock, s);
 }
 
+/*
+ * TEMP DIAGNOSTIC: OpenBSD's rrwlock cannot upgrade read->write.  The macros
+ * below capture the caller's __FILE__/__LINE__; on a would-block that never
+ * clears we panic() reporting BOTH the requester (this call) and the current
+ * holder (recorded on the last successful lock), so a single console photo
+ * names the offending SHARED-then-EXCLUSIVE pair -- no debugger needed.
+ */
 static __inline void
-hammer2_mtx_ex(hammer2_mtx_t *p)
+_hammer2_mtx_ex(hammer2_mtx_t *p, const char *file, int line)
 {
-	rrw_enter(&p->lock, RW_WRITE);
+	/*
+	 * Stock DragonFly semantics: block until the exclusive lock is
+	 * available, letting current shared/exclusive holders run and release.
+	 * A plain sleeping rrw_enter(RW_WRITE) can't be used because if THIS
+	 * thread already holds the lock shared, rrwlock cannot upgrade and would
+	 * sleep forever.  So we retry with RW_NOSLEEP but *yield the CPU* between
+	 * attempts (tsleep, not delay) so the holder can make progress -- the
+	 * earlier delay()-spin starved the very holder it waited on.  If it is
+	 * still stuck after ~4s we log the requester/holder and block (do not
+	 * panic) so the box stays up for ps(1) inspection of the wedged holder.
+	 */
+	if (rrw_enter(&p->lock, RW_WRITE | RW_NOSLEEP) != 0) {
+		int _i;
+
+		for (_i = 0; _i < 400; ++_i) {		/* ~4s of yielding */
+			tsleep(p, 0, "h2exwait", 1);	/* yield ~1 tick */
+			if (rrw_enter(&p->lock, RW_WRITE | RW_NOSLEEP) == 0)
+				goto acquired;
+		}
+		/*
+		 * TEMP DIAG: still stuck after 4s.  Print who is waiting and who
+		 * holds it (once), then BLOCK (sleeping) rather than panic, so the
+		 * box survives to a login and the stuck shared holder can be
+		 * inspected with ps(1).
+		 */
+		printf("hammer2_mtx_ex STALL: req %s:%d holder %s:%d "
+		    "lock=%p refs=%d pid=%d -- blocking\n", file, line,
+		    p->lfile ? p->lfile : "?", p->lline, p, p->refs,
+		    curproc ? curproc->p_p->ps_pid : -1);
+		rrw_enter(&p->lock, RW_WRITE);		/* block, do not halt */
+	}
+acquired:
+	p->lfile = file;
+	p->lline = line;
 	atomic_add_int(&p->refs, 1);
 }
+#define hammer2_mtx_ex(p)	_hammer2_mtx_ex((p), __FILE__, __LINE__)
 
 static __inline void
-hammer2_mtx_sh(hammer2_mtx_t *p)
+_hammer2_mtx_sh(hammer2_mtx_t *p, const char *file, int line)
 {
-	rrw_enter(&p->lock, RW_READ);
+	/*
+	 * If this thread already owns the lock exclusively, a shared request
+	 * is weaker and is already satisfied.  OpenBSD's rrwlock deadlocks on
+	 * RW_READ-over-own-RW_WRITE, so recurse as RW_WRITE instead (DragonFly's
+	 * mtx allows shared-over-exclusive-by-self the same way).
+	 */
+	int how = (rrw_status(&p->lock) == RW_WRITE) ? RW_WRITE : RW_READ;
+
+	if (rrw_enter(&p->lock, how | RW_NOSLEEP) != 0) {
+		int _i;
+
+		for (_i = 0; _i < 400; ++_i) {		/* ~4s of yielding */
+			tsleep(p, 0, "h2shwait", 1);
+			if (rrw_enter(&p->lock, how | RW_NOSLEEP) == 0)
+				goto acquired;
+		}
+		/* TEMP DIAG: same as mtx_ex -- log stuck holder, then block. */
+		printf("hammer2_mtx_sh STALL: req %s:%d holder %s:%d "
+		    "lock=%p refs=%d pid=%d how=%d -- blocking\n", file, line,
+		    p->lfile ? p->lfile : "?", p->lline, p, p->refs,
+		    curproc ? curproc->p_p->ps_pid : -1, how);
+		rrw_enter(&p->lock, how);		/* block, do not halt */
+	}
+acquired:
+	p->lfile = file;
+	p->lline = line;
 	atomic_add_int(&p->refs, 1);
 }
+#define hammer2_mtx_sh(p)	_hammer2_mtx_sh((p), __FILE__, __LINE__)
 
 static __inline void
 hammer2_mtx_unlock(hammer2_mtx_t *p)
@@ -205,7 +274,13 @@ hammer2_mtx_assert_ex(hammer2_mtx_t *p)
 static __inline void
 hammer2_mtx_assert_sh(hammer2_mtx_t *p)
 {
-	KASSERT(rrw_status(&p->lock) == RW_READ);
+	/*
+	 * A shared assertion passes if held shared, or if this thread holds it
+	 * exclusive (exclusive satisfies a shared expectation -- see
+	 * _hammer2_mtx_sh's recurse-as-write path).
+	 */
+	KASSERT(rrw_status(&p->lock) == RW_READ ||
+	    rrw_status(&p->lock) == RW_WRITE);
 }
 
 static __inline void
@@ -221,26 +296,34 @@ hammer2_mtx_assert_unlocked(hammer2_mtx_t *p)
 }
 
 static __inline int
-hammer2_mtx_ex_try(hammer2_mtx_t *p)
+_hammer2_mtx_ex_try(hammer2_mtx_t *p, const char *file, int line)
 {
 	if (!rrw_enter(&p->lock, RW_WRITE|RW_NOSLEEP)) {
+		p->lfile = file;
+		p->lline = line;
 		atomic_add_int(&p->refs, 1);
 		return (0);
 	} else {
 		return (1);
 	}
 }
+#define hammer2_mtx_ex_try(p)	_hammer2_mtx_ex_try((p), __FILE__, __LINE__)
 
 static __inline int
-hammer2_mtx_sh_try(hammer2_mtx_t *p)
+_hammer2_mtx_sh_try(hammer2_mtx_t *p, const char *file, int line)
 {
-	if (!rrw_enter(&p->lock, RW_READ|RW_NOSLEEP)) {
+	int how = (rrw_status(&p->lock) == RW_WRITE) ? RW_WRITE : RW_READ;
+
+	if (!rrw_enter(&p->lock, how|RW_NOSLEEP)) {
+		p->lfile = file;
+		p->lline = line;
 		atomic_add_int(&p->refs, 1);
 		return (0);
 	} else {
 		return (1);
 	}
 }
+#define hammer2_mtx_sh_try(p)	_hammer2_mtx_sh_try((p), __FILE__, __LINE__)
 
 static __inline int
 hammer2_mtx_upgrade_try(hammer2_mtx_t *p)

@@ -246,10 +246,19 @@ hammer2_strategy_read(struct vop_strategy_args *ap)
 	KKASSERT(((int)lbase & HAMMER2_PBUFMASK) == 0);
 
 	xop = hammer2_xop_alloc(ip, HAMMER2_XOP_STRATEGY);
+	xop->finished = 0;
+	hammer2_mtx_init(&xop->lock, "h2bior");
 	xop->bp = bp;
 	xop->lbase = lbase;
 	hammer2_xop_start(&xop->head, &hammer2_strategy_read_desc);
-	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+	/*
+	 * NB: do NOT retire the VOP here.  This is an async read -- the bio is
+	 * completed (and the VOP retired) by whichever backend node's collect
+	 * sees the cluster satisfied, guarded by xop->finished/xop->lock so it
+	 * happens exactly once.  Retiring VOP here clears it from the collect's
+	 * ALLDONE=VOP|CLUSTER accounting before the backends run, wedging the
+	 * read at nchains>1 (bio never completed -> cat stuck in biowait).
+	 */
 
 	return (0);
 }
@@ -291,13 +300,35 @@ hammer2_xop_strategy_read(hammer2_xop_t *arg, void *scratch, int clindex)
 	chain = NULL; /* safety */
 	parent = NULL; /* safety */
 
-	bp = xop->bp;
+	/*
+	 * Race to finish the frontend.  This is an async read -- the bio is
+	 * completed (and the VOP retired) by whichever backend node's
+	 * non-blocking collect sees the cluster satisfied, exactly once, under
+	 * xop->finished/xop->lock.  A node that collects before its peers have
+	 * fed gets EINPROGRESS and must NOT touch the bp (it is still owned by
+	 * the frontend / a peer node).
+	 */
+	if (xop->finished)
+		return;
+	hammer2_mtx_ex(&xop->lock);
+	if (xop->finished) {
+		hammer2_mtx_unlock(&xop->lock);
+		return;
+	}
 	error = hammer2_xop_collect(&xop->head, HAMMER2_XOP_COLLECT_NOWAIT);
+	if (error == HAMMER2_ERROR_EINPROGRESS) {
+		hammer2_mtx_unlock(&xop->lock);
+		return;
+	}
+	xop->finished = 1;
+	hammer2_mtx_unlock(&xop->lock);
+
+	bp = xop->bp; /* now owned by us */
 	switch (error) {
 	case 0:
 		data = hammer2_xop_gdata(&xop->head)->buf;
 		hammer2_strategy_read_completion(xop->head.cluster.focus, data,
-		    xop->bp);
+		    bp);
 		hammer2_xop_pdata(&xop->head);
 		s = splbio();
 		biodone(bp);
@@ -321,6 +352,7 @@ hammer2_xop_strategy_read(hammer2_xop_t *arg, void *scratch, int clindex)
 		splx(s);
 		break;
 	}
+	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
 }
 
 static void
@@ -407,10 +439,18 @@ hammer2_strategy_write(struct vop_strategy_args *ap)
 
 	xop = hammer2_xop_alloc(ip,
 	    HAMMER2_XOP_MODIFYING | HAMMER2_XOP_STRATEGY);
+	xop->finished = 0;
+	hammer2_mtx_init(&xop->lock, "h2swr");
 	xop->bp = bp;
 	xop->lbase = lbase;
 	hammer2_xop_start(&xop->head, &hammer2_strategy_write_desc);
-	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+	/*
+	 * NB: do NOT retire the VOP here.  This is an async write -- the bio is
+	 * completed (and the VOP retired) by whichever backend node's storage
+	 * func sees the collect finish, guarded by xop->finished/xop->lock so it
+	 * happens exactly once.  Retiring VOP here made every node biodone the
+	 * buffer, which wedged the syncer's vflushbuf at nchains>1.
+	 */
 
 	return (0);
 }
@@ -422,16 +462,29 @@ hammer2_xop_strategy_write(hammer2_xop_t *arg, void *scratch, int clindex)
 	hammer2_chain_t *parent;
 	hammer2_inode_t *ip = xop->head.ip1; /* retained by ref */
 	hammer2_key_t lbase = xop->lbase;
-	struct buf *bp = xop->bp;
+	struct buf *bp;
 	char *bio_data = scratch;
 	int s, error, lblksize, pblksize;
 
+	/*
+	 * We may only touch the bp while the frontend has not completed it.
+	 */
+	if (xop->finished)
+		return;
+	hammer2_mtx_sh(&xop->lock);
+	if (xop->finished) {
+		hammer2_mtx_unlock(&xop->lock);
+		return;
+	}
+	bp = xop->bp;
 	lblksize = hammer2_calc_logical(ip, lbase, &lbase, NULL);
 	pblksize = hammer2_calc_physical(ip, lbase);
 	KKASSERT(lblksize <= MAXPHYS);
 	bcopy(bp->b_data, bio_data, lblksize);
+	hammer2_mtx_unlock(&xop->lock);
 	bp = NULL; /* safety, illegal to access after unlock */
 
+	/* Write this cluster node's copy of the data. */
 	parent = hammer2_inode_chain(ip, clindex, HAMMER2_RESOLVE_ALWAYS);
 	hammer2_write_file_core(bio_data, ip, &parent, lbase, IO_ASYNC,
 	    pblksize, xop->head.mtid, &error);
@@ -441,8 +494,30 @@ hammer2_xop_strategy_write(hammer2_xop_t *arg, void *scratch, int clindex)
 		parent = NULL; /* safety */
 	}
 	hammer2_xop_feed(&xop->head, NULL, clindex, error);
+	hprintf("STRAT clindex=%d werr=%d\n", clindex, error);
 
+	/*
+	 * Complete the bio on behalf of the frontend.  Only the node whose
+	 * non-blocking collect sees every node finished does it, exactly once,
+	 * under xop->finished/xop->lock.  The others just return.
+	 */
+	if (xop->finished)
+		return;
+	hammer2_mtx_ex(&xop->lock);
+	if (xop->finished) {
+		hammer2_mtx_unlock(&xop->lock);
+		return;
+	}
 	error = hammer2_xop_collect(&xop->head, HAMMER2_XOP_COLLECT_NOWAIT);
+	hprintf("STRAT collect clindex=%d cerr=%08x\n", clindex, error);
+	if (error == HAMMER2_ERROR_EINPROGRESS) {
+		hammer2_mtx_unlock(&xop->lock);
+		return;
+	}
+	xop->finished = 1;
+	hammer2_mtx_unlock(&xop->lock);
+	hprintf("STRAT biodone clindex=%d cerr=%08x\n", clindex, error);
+
 	bp = xop->bp; /* now owned by us */
 	if (error == HAMMER2_ERROR_ENOENT || error == 0) {
 		bp->b_resid = 0;
@@ -459,6 +534,7 @@ hammer2_xop_strategy_write(hammer2_xop_t *arg, void *scratch, int clindex)
 		biodone(bp);
 		splx(s);
 	}
+	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
 	hammer2_trans_assert_strategy(ip->pmp);
 	hammer2_trans_done(ip->pmp, HAMMER2_TRANS_BUFCACHE);
 }

@@ -39,6 +39,7 @@
 #include <sys/types.h>
 #include <sys/lock.h>
 #include <sys/tree.h>
+#include <sys/mutex.h>
 
 //#include "hammer2_rb.h"
 #include "hammer2.h"
@@ -58,6 +59,34 @@ static hammer2_chain_t *hammer2_combined_find(hammer2_chain_t *,
     hammer2_blockref_t *, int, hammer2_key_t *, hammer2_key_t, hammer2_key_t,
     hammer2_blockref_t **);
 static hammer2_chain_t *hammer2_chain_lastdrop(hammer2_chain_t *, int);
+
+/*
+ * TEMP leak-hunt: global list of every live (hmalloc'd) chain, so
+ * hammer2_assert_clean() can name whatever leaked at last unmount.
+ */
+TAILQ_HEAD(hammer2_chain_dbg_head, hammer2_chain);
+struct hammer2_chain_dbg_head hammer2_chain_dbg_list =
+    TAILQ_HEAD_INITIALIZER(hammer2_chain_dbg_list);
+struct mutex hammer2_chain_dbg_mtx = MUTEX_INITIALIZER(IPL_NONE);
+
+void
+hammer2_chain_dbg_dump(const char *tag)
+{
+	hammer2_chain_t *chain;
+	int n = 0;
+
+	mtx_enter(&hammer2_chain_dbg_mtx);
+	TAILQ_FOREACH(chain, &hammer2_chain_dbg_list, dbg_entry) {
+		hprintf("LEAKCHAIN[%s] type=%d key=%016llx mtid=%016llx "
+		    "flags=%08x refs=%d pmp=%p\n", tag, chain->bref.type,
+		    (unsigned long long)chain->bref.key,
+		    (unsigned long long)chain->bref.modify_tid, chain->flags,
+		    chain->refs, chain->pmp);
+		++n;
+	}
+	mtx_leave(&hammer2_chain_dbg_mtx);
+	hprintf("LEAKCHAIN[%s] total live chains = %d\n", tag, n);
+}
 static void hammer2_chain_load_data(hammer2_chain_t *);
 static int hammer2_chain_testcheck(const hammer2_chain_t *, void *);
 
@@ -175,6 +204,9 @@ hammer2_chain_alloc(hammer2_dev_t *hmp, hammer2_pfs_t *pmp,
 	case HAMMER2_BREF_TYPE_VOLUME:
 		chain = hmalloc(sizeof(*chain), M_HAMMER2, M_WAITOK | M_ZERO);
 		atomic_add_int(&hammer2_count_chain_allocated, 1);
+		mtx_enter(&hammer2_chain_dbg_mtx);	/* TEMP leak-hunt */
+		TAILQ_INSERT_TAIL(&hammer2_chain_dbg_list, chain, dbg_entry);
+		mtx_leave(&hammer2_chain_dbg_mtx);
 		break;
 	case HAMMER2_BREF_TYPE_EMPTY:
 	default:
@@ -636,6 +668,9 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 	 */
 	if (chain->flags & HAMMER2_CHAIN_ALLOCATED) {
 		atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ALLOCATED);
+		mtx_enter(&hammer2_chain_dbg_mtx);	/* TEMP leak-hunt */
+		TAILQ_REMOVE(&hammer2_chain_dbg_list, chain, dbg_entry);
+		mtx_leave(&hammer2_chain_dbg_mtx);
 		hammer2_mtx_destroy(&chain->lock);
 		hammer2_mtx_destroy(&chain->diolk);
 		hammer2_lk_destroy(&chain->inp_lock);

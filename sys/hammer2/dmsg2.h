@@ -763,12 +763,14 @@ struct kdmsg_state {
 	TAILQ_ENTRY(kdmsg_state) user_entry;	/* available to devices */
 	struct kdmsg_iocom *iocom;
 	struct kdmsg_state *parent;
+	struct kdmsg_state *scan;		/* recursion scan hint */
 	uint32_t	icmd;			/* record cmd creating state */
 	uint32_t	txcmd;			/* mostly for CMDF flags */
 	uint32_t	rxcmd;			/* mostly for CMDF flags */
 	uint64_t	msgid;			/* {parent,msgid} uniq */
 	int		flags;
 	int		error;
+	u_int		refs;			/* refcount */
 	void		*chain;			/* (caller's state) */
 	int (*func)(struct kdmsg_state *, struct kdmsg_msg *);
 	union {
@@ -778,12 +780,17 @@ struct kdmsg_state {
 	} any;
 };
 
-#define KDMSG_STATE_INSERTED	0x0001
+#define KDMSG_STATE_INSERTED	0x0001		/* legacy: on a tree/subq */
 #define KDMSG_STATE_DYNAMIC	0x0002
 #define KDMSG_STATE_DELPEND	0x0004		/* transmit delete pending */
 #define KDMSG_STATE_ABORTING	0x0008		/* avoids recursive abort */
 #define KDMSG_STATE_OPPOSITE	0x0010		/* opposite direction */
 #define KDMSG_STATE_DYING	0x0020		/* indicates circuit failure */
+#define KDMSG_STATE_RBINSERTED	0x0040		/* on staterd/statewr tree */
+#define KDMSG_STATE_SUBINSERTED	0x0080		/* on parent->subq */
+#define KDMSG_STATE_INTERLOCK	0x0100		/* tx/rx race interlock */
+#define KDMSG_STATE_SIGNAL	0x0200		/* interlock waiter */
+#define KDMSG_STATE_NEW		0x0400		/* defer abort until msg tx */
 
 struct kdmsg_msg {
 	TAILQ_ENTRY(kdmsg_msg) qentry;		/* serialized queue */

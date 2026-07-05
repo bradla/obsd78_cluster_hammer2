@@ -67,9 +67,10 @@ void hammer2_demon(void *(*func)(void *), void *arg);
 #define UDEVWAIT		_IOR('U', 1, int)
 #endif
 
-struct hammer2_ioc_recluster { int fd; };
+/* Must match the kernel: sys/hammer2/hammer2_ioctl.h ('h', 65, 256 bytes). */
+struct hammer2_ioc_recluster { int fd; char reserved[256 - 4]; };
 #ifndef HAMMER2IOC_RECLUSTER
-#define HAMMER2IOC_RECLUSTER	_IOWR('h', 40, struct hammer2_ioc_recluster)
+#define HAMMER2IOC_RECLUSTER	_IOWR('h', 65, struct hammer2_ioc_recluster)
 #endif
 
 struct disk_ioc_recluster { int fd; };
@@ -549,6 +550,7 @@ static
 void
 hammer2_volconf_signal(dmsg_iocom_t *iocom)
 {
+	fprintf(stderr, "VOLCONF SIGNAL: alt_fd fired -> setting EOF\n");
 	atomic_set_int(&iocom->flags, DMSG_IOCOMF_EOF);
 }
 
@@ -876,8 +878,14 @@ master_reconnect(const char *mntpt)
 		fprintf(stderr, "reconnect %s: no access to mount\n", mntpt);
 		return;
 	}
-	if (pipe(pipefds) < 0) {
-		fprintf(stderr, "reconnect %s: pipe() failed\n", mntpt);
+	/*
+	 * OpenBSD: use a bidirectional AF_UNIX socketpair rather than pipe()
+	 * (OpenBSD pipes are unidirectional).  The kernel drives its end with
+	 * soreceive/sosend, and libdmsg treats the local AF_UNIX link as
+	 * unencrypted (see dmsg_iocom_init).
+	 */
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipefds) < 0) {
+		fprintf(stderr, "reconnect %s: socketpair() failed\n", mntpt);
 		close(fd);
 		return;
 	}

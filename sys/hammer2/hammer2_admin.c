@@ -388,6 +388,7 @@ void *
 hammer2_xop_alloc(hammer2_inode_t *ip, int flags)
 {
 	hammer2_xop_t *xop;
+	int i;
 
 	xop = pool_get(&hammer2_pool_xops, PR_WAITOK | PR_ZERO);
 	KKASSERT(xop->head.cluster.array[0].chain == NULL);
@@ -407,9 +408,17 @@ hammer2_xop_alloc(hammer2_inode_t *ip, int flags)
 	/* run_mask - Frontend associated with XOP. */
 	xop->head.run_mask = HAMMER2_XOPMASK_VOP;
 
-	hammer2_xop_fifo_t *fifo = &xop->head.collect[0];
+	/*
+	 * Allocate a collect FIFO for EVERY cluster node, not just node 0.
+	 * hammer2_xop_feed() writes into collect[clindex] for each node, and
+	 * hammer2_xop_retire() frees collect[0..nchains-1] -- allocating only
+	 * node 0 left collect[1+].errors/array NULL and faulted feed() at
+	 * nchains > 1.
+	 */
 	xop->head.fifo_size = HAMMER2_XOPFIFO;
-	hammer2_xop_fifo_alloc(fifo, xop->head.fifo_size, 0);
+	for (i = 0; i < xop->head.cluster.nchains; ++i)
+		hammer2_xop_fifo_alloc(&xop->head.collect[i],
+		    xop->head.fifo_size, 0);
 
 	hammer2_inode_ref(ip);
 
@@ -514,7 +523,12 @@ xop_unset_ipdep(hammer2_inode_t *ip, int idx)
 		}
 }
 
-static void
+/*
+ * Frontend inode-dependency serialization (synchronous-model helper).  Unused
+ * in the threaded model -- hammer2_xop_next()'s dependency hash serializes
+ * same-inode XOPs per worker thread instead.  Kept for reference.
+ */
+static void __unused
 hammer2_xop_testset_ipdep(hammer2_inode_t *ip)
 {
 	hammer2_pfs_t *pmp = ip->pmp;
@@ -583,41 +597,83 @@ hammer2_xop_start_except(hammer2_xop_head_t *xop, hammer2_xop_desc_t *desc,
     int notidx)
 {
 	hammer2_inode_t *ip = xop->ip1;
-	uint32_t mask;
-	int i;
+	hammer2_pfs_t *pmp = ip->pmp;
+	hammer2_thread_t *thr;
+	int i, ng, nchains;
 
 	KKASSERT(ip);
 	hammer2_assert_cluster(&ip->cluster);
+
+	/*
+	 * Make sure the backend xop worker threads exist for this pmp (a node
+	 * may have been added to a live cluster after mount).
+	 */
+	if (pmp->has_xop_threads == 0)
+		hammer2_xop_helper_create(pmp);
+
 	xop->desc = desc;
 
 	if (desc == &hammer2_strategy_write_desc)
 		xop->scratch = hmalloc(hammer2_get_logical(), M_HAMMER2,
 		    M_WAITOK | M_ZERO);
 
-	for (i = 0; i < ip->cluster.nchains; ++i) {
-		if (i == notidx)	/* skip this cluster node (sync source) */
-			continue;
-		mask = 1LLU << i;
-		if (ip->cluster.array[i].chain) {
-			atomic_set_32(&xop->run_mask, mask);
-			atomic_set_32(&xop->chk_mask, mask);
-		} else {
-			continue;
-		}
+	/*
+	 * Select a worker group.  Hash by inode so all operations on the same
+	 * inode serialize to the same group's threads (where hammer2_xop_next's
+	 * dependency-hash then serializes them).  The port has no strategy/cpu
+	 * split, so group selection is otherwise arbitrary.
+	 */
+	ng = (unsigned int)ip->ihash % hammer2_xop_nthreads;
 
-		if (hammer2_xop_active(xop)) {
-			hammer2_xop_testset_ipdep(ip);
-			if (xop->ip2)
-				hammer2_xop_testset_ipdep(xop->ip2);
-			if (xop->ip3 && xop->ip3 != xop->ip1) /* rename */
-				hammer2_xop_testset_ipdep(xop->ip3);
-			if (xop->ip4 && xop->ip4 != xop->ip2) /* rename */
-				hammer2_xop_testset_ipdep(xop->ip4);
-			xop_storage_func(xop, ip, xop->scratch, i);
-			hammer2_xop_retire(xop, mask);
-		} else {
-			hammer2_xop_feed(xop, NULL, i, ECONNABORTED);
-			hammer2_xop_retire(xop, mask);
+	/*
+	 * Queue the XOP to each cluster node's worker thread.  The instant it
+	 * is queued a backend thread may pick it off (and, for async ops, even
+	 * free it), so do not touch xop after dropping xop_spin except via the
+	 * per-thread pointers captured here.
+	 */
+	hammer2_spin_ex(&pmp->xop_spin);
+	nchains = ip->cluster.nchains;
+	for (i = 0; i < nchains; ++i) {
+		if (i != notidx && ip->cluster.array[i].chain) {
+			/*
+			 * Front-end DATA-modifying ops (write, create, unlink,
+			 * ...) are applied to MASTER nodes only -- this mirrors
+			 * DragonFly, where hammer2_cluster_check() sets CITEM_FEMOD
+			 * only on masters, so slaves are read-only from the
+			 * frontend and brought up to date asynchronously by the
+			 * per-node sync thread (hammer2_primary_sync_thread).
+			 *
+			 * The FLUSH and CHAIN_SYNC XOPs are the exception: like
+			 * DragonFly they must reach EVERY node so each node commits
+			 * its own dirty chains -- including the chains the sync
+			 * thread just created on the slave.  Skipping them on the
+			 * slave leaves the slave's modify_tid unadvanced and the
+			 * sync thread loops forever (never converges).
+			 *
+			 * Non-modifying ops (reads) always fan out to all nodes
+			 * for quorum.
+			 */
+			if (nchains >= 2 &&
+			    (xop->flags & HAMMER2_XOP_MODIFYING) &&
+			    desc != &hammer2_inode_flush_desc &&
+			    desc != &hammer2_inode_chain_sync_desc &&
+			    pmp->pfs_types[i] != HAMMER2_PFSTYPE_MASTER &&
+			    pmp->pfs_types[i] != HAMMER2_PFSTYPE_SUPROOT)
+				continue;
+			thr = &pmp->xop_groups[ng].thrs[i];
+			atomic_set_64(&xop->run_mask, 1LLU << i);
+			atomic_set_64(&xop->chk_mask, 1LLU << i);
+			xop->collect[i].thr = thr;
+			TAILQ_INSERT_TAIL(&thr->xopq, xop, collect[i].entry);
+		}
+	}
+	hammer2_spin_unex(&pmp->xop_spin);
+
+	/* Signal each worker thread that has work. */
+	for (i = 0; i < nchains; ++i) {
+		if (i != notidx) {
+			thr = &pmp->xop_groups[ng].thrs[i];
+			hammer2_thr_signal(thr, HAMMER2_THREAD_XOPQ);
 		}
 	}
 }
@@ -635,22 +691,43 @@ hammer2_xop_start(hammer2_xop_head_t *xop, hammer2_xop_desc_t *desc)
  * Retire a XOP.  Used by both the VOP frontend and by the XOP backend.
  */
 void
-hammer2_xop_retire(hammer2_xop_head_t *xop, uint32_t mask)
+hammer2_xop_retire(hammer2_xop_head_t *xop, uint64_t mask)
 {
 	hammer2_chain_t *chain, *dropch[HAMMER2_MAXCLUSTER];
 	hammer2_inode_t *ip;
 	hammer2_xop_fifo_t *fifo;
-	uint32_t omask;
+	uint64_t nmask;
 	int prior_nchains, i;
 
-	/* Remove the frontend collector or remove a backend feeder. */
+	/*
+	 * Remove the frontend collector or a backend feeder, adding a FEED bit
+	 * so a waiting frontend re-checks.  When the frontend (VOP) terminates
+	 * we wake any backend blocked on a full fifo; when the last backend
+	 * terminates we wake a waiting frontend.
+	 */
 	KASSERTMSG(xop->run_mask & mask,
-	    "run_mask %x vs mask %x", xop->run_mask, mask);
-	omask = atomic_fetchadd_32(&xop->run_mask, -mask);
+	    "run_mask %llx vs mask %llx",
+	    (unsigned long long)xop->run_mask, (unsigned long long)mask);
+	nmask = atomic_fetchadd_64(&xop->run_mask,
+	    -mask + HAMMER2_XOPMASK_FEED);
 
 	/* More than one entity left. */
-	if ((omask & HAMMER2_XOPMASK_ALLDONE) != mask)
+	if ((nmask & HAMMER2_XOPMASK_ALLDONE) != mask) {
+		/*
+		 * NOTE: xop can be ripped out from under us here; wakeup(xop)
+		 *	 does not dereference it so it is safe.
+		 */
+		if (mask == HAMMER2_XOPMASK_VOP) {
+			if (nmask & HAMMER2_XOPMASK_FIFOW)
+				wakeup(xop);
+		}
+		nmask -= mask;
+		if ((nmask & HAMMER2_XOPMASK_ALLDONE) == HAMMER2_XOPMASK_VOP) {
+			if (nmask & HAMMER2_XOPMASK_WAIT)
+				wakeup(xop);
+		}
 		return;
+	}
 
 	/*
 	 * All collectors are gone, we can cleanup and dispose of the XOP.
@@ -796,6 +873,7 @@ hammer2_xop_feed(hammer2_xop_head_t *xop, hammer2_chain_t *chain, int clindex,
 {
 	hammer2_xop_fifo_t *fifo;
 	size_t old_fifo_size;
+	uint64_t mask;
 
 	/* Early termination (typically of xop_readir). */
 	if (hammer2_xop_active(xop) == 0) {
@@ -824,8 +902,18 @@ hammer2_xop_feed(hammer2_xop_head_t *xop, hammer2_chain_t *chain, int clindex,
 		error = chain->error;
 	fifo->errors[fifo->wi & fifo_mask(xop)] = error;
 	fifo->array[fifo->wi & fifo_mask(xop)] = chain;
+	cpu_ccfence();
 	++fifo->wi;
 
+	/*
+	 * Signal that a result was fed and wake the frontend collector if it
+	 * is blocked waiting for one.
+	 */
+	mask = atomic_fetchadd_64(&xop->run_mask, HAMMER2_XOPMASK_FEED);
+	if (mask & HAMMER2_XOPMASK_WAIT) {
+		atomic_clear_64(&xop->run_mask, HAMMER2_XOPMASK_WAIT);
+		wakeup(xop);
+	}
 	error = 0;
 done:
 	return (error);
@@ -845,14 +933,18 @@ hammer2_xop_collect(hammer2_xop_head_t *xop, int flags)
 	hammer2_xop_fifo_t *fifo;
 	hammer2_chain_t *chain;
 	hammer2_key_t lokey;
+	uint64_t mask;
 	int i, keynull, adv, error;
 
+loop:
 	/*
 	 * First loop tries to advance pieces of the cluster which
 	 * are out of sync.
 	 */
 	lokey = HAMMER2_KEY_MAX;
 	keynull = HAMMER2_CHECK_NULL;
+	mask = xop->run_mask;
+	cpu_ccfence();
 
 	for (i = 0; i < xop->cluster.nchains; ++i) {
 		chain = xop->cluster.array[i].chain;
@@ -903,12 +995,304 @@ hammer2_xop_collect(hammer2_xop_head_t *xop, int flags)
 	 * ENOENT - normal end of scan, return ENOENT.
 	 * EIO	  - IO error or CRC check error from hammer2_cluster_check().
 	 */
-	error = hammer2_cluster_check(&xop->cluster, lokey, keynull);
+	/*
+	 * If WAITALL is requested we must wait for every node to finish before
+	 * evaluating; otherwise check the cluster now.
+	 */
+	if ((flags & HAMMER2_XOP_COLLECT_WAITALL) &&
+	    (mask & HAMMER2_XOPMASK_ALLDONE) != HAMMER2_XOPMASK_VOP) {
+		error = HAMMER2_ERROR_EINPROGRESS;
+	} else {
+		error = hammer2_cluster_check(&xop->cluster, lokey, keynull);
+	}
+
+	/*
+	 * Insufficient nodes have fed -- block until a backend feeds a result
+	 * (feed clears WAIT and wakes us), then re-scan.  NOWAIT callers (e.g.
+	 * strategy) return EINPROGRESS instead of blocking.
+	 */
+	if (error == HAMMER2_ERROR_EINPROGRESS) {
+		if (flags & HAMMER2_XOP_COLLECT_NOWAIT)
+			goto done;
+		tsleep_interlock(xop, 0);
+		if (atomic_cmpset_64(&xop->run_mask, mask,
+		    mask | HAMMER2_XOPMASK_WAIT)) {
+			/*
+			 * 1s (not DragonFly's 60s): OpenBSD's tsleep_interlock
+			 * is a no-op, so a wakeup lost in the cmpset->tsleep
+			 * window costs one timeout period -- keep it short.
+			 */
+			tsleep(xop, PINTERLOCKED, "h2coll", hz);
+		}
+		goto loop;
+	}
+
+	/*
+	 * Quorum agrees lokey is not a valid element; skip it and continue.
+	 */
+	if (error == HAMMER2_ERROR_ESRCH) {
+		if (lokey != HAMMER2_KEY_MAX) {
+			xop->collect_key = lokey + 1;
+			goto loop;
+		}
+		error = HAMMER2_ERROR_ENOENT;
+	}
+
+	/*
+	 * No quorum agreement (repair needed); advance and retry.
+	 */
+	if (error == HAMMER2_ERROR_EDEADLK) {
+		if (lokey != HAMMER2_KEY_MAX) {
+			xop->collect_key = lokey + 1;
+			goto loop;
+		}
+	}
 
 	if (lokey == HAMMER2_KEY_MAX)
 		xop->collect_key = lokey;
 	else
 		xop->collect_key = lokey + 1;
-
+done:
 	return (error);
+}
+
+/*
+ * ===========================================================================
+ * XOP BACKEND HELPER THREADS
+ *
+ * Ported from DragonFly hammer2_admin.c.  DragonFly runs every XOP on these
+ * per-(node,group) worker threads so a dead or stalled cluster node cannot
+ * stall the frontend.  The whole fifo/collect/run_mask machinery exists to
+ * serve them.
+ *
+ * PHASE 1: these threads are created (for mounted PFSs and any cluster with
+ * nchains >= 2) but hammer2_xop_start_except still dispatches SYNCHRONOUSLY,
+ * so the per-thread xopq stays empty and the threads simply idle.  Phase 2
+ * flips the dispatch to enqueue+signal.  This lets the thread lifecycle be
+ * verified against the working single-node path before the behavioral switch.
+ * ===========================================================================
+ */
+
+int hammer2_xop_nthreads = 2;		/* helper threads per cluster node */
+
+#define XOP_HASH_SIZE	16
+#define XOP_HASH_MASK	(XOP_HASH_SIZE - 1)
+
+static __inline int
+xop_testhash(hammer2_thread_t *thr, hammer2_inode_t *ip, uint32_t *hash)
+{
+	uint32_t mask;
+	int hv;
+
+	hv = (int)((uintptr_t)ip + (uintptr_t)thr) / sizeof(hammer2_inode_t);
+	mask = 1U << (hv & 31);
+	hv >>= 5;
+	return ((int)(hash[hv & XOP_HASH_MASK] & mask));
+}
+
+static __inline void
+xop_sethash(hammer2_thread_t *thr, hammer2_inode_t *ip, uint32_t *hash)
+{
+	uint32_t mask;
+	int hv;
+
+	hv = (int)((uintptr_t)ip + (uintptr_t)thr) / sizeof(hammer2_inode_t);
+	mask = 1U << (hv & 31);
+	hv >>= 5;
+	hash[hv & XOP_HASH_MASK] |= mask;
+}
+
+/*
+ * Locate and return the next runnable xop for this thread's cluster index,
+ * or NULL.  Leaves it on the queue (it blocks dependent xops) and sets
+ * HAMMER2_XOP_FIFO_RUN on the returned xop.
+ */
+static hammer2_xop_head_t *
+hammer2_xop_next(hammer2_thread_t *thr)
+{
+	hammer2_pfs_t *pmp = thr->pmp;
+	int clindex = thr->clindex;
+	uint32_t hash[XOP_HASH_SIZE] = { 0 };
+	hammer2_xop_head_t *xop;
+
+	hammer2_spin_ex(&pmp->xop_spin);
+	TAILQ_FOREACH(xop, &thr->xopq, collect[clindex].entry) {
+		/* Skip xops that depend on an already-selected inode. */
+		if (xop_testhash(thr, xop->ip1, hash) ||
+		    (xop->ip2 && xop_testhash(thr, xop->ip2, hash)) ||
+		    (xop->ip3 && xop_testhash(thr, xop->ip3, hash)) ||
+		    (xop->ip4 && xop_testhash(thr, xop->ip4, hash))) {
+			continue;
+		}
+		xop_sethash(thr, xop->ip1, hash);
+		if (xop->ip2)
+			xop_sethash(thr, xop->ip2, hash);
+		if (xop->ip3)
+			xop_sethash(thr, xop->ip3, hash);
+		if (xop->ip4)
+			xop_sethash(thr, xop->ip4, hash);
+
+		if (xop->collect[clindex].flags & HAMMER2_XOP_FIFO_RUN)
+			continue;
+
+		atomic_set_int(&xop->collect[clindex].flags,
+		    HAMMER2_XOP_FIFO_RUN);
+		break;
+	}
+	hammer2_spin_unex(&pmp->xop_spin);
+
+	return (xop);
+}
+
+/*
+ * Remove a completed xop from the thread's queue, clear FIFO_RUN.
+ */
+static void
+hammer2_xop_dequeue(hammer2_thread_t *thr, hammer2_xop_head_t *xop)
+{
+	hammer2_pfs_t *pmp = thr->pmp;
+	int clindex = thr->clindex;
+
+	hammer2_spin_ex(&pmp->xop_spin);
+	TAILQ_REMOVE(&thr->xopq, xop, collect[clindex].entry);
+	atomic_clear_int(&xop->collect[clindex].flags, HAMMER2_XOP_FIFO_RUN);
+	hammer2_spin_unex(&pmp->xop_spin);
+	if (TAILQ_FIRST(&thr->xopq))
+		hammer2_thr_signal(thr, HAMMER2_THREAD_XOPQ);
+}
+
+/*
+ * Primary per-(node,group) xop worker thread.  Pulls xops queued for its
+ * cluster index, runs the desc's storage_func on that single node, and
+ * retires its bit.  (Phase 1: frontend never enqueues, so this idles.)
+ */
+void
+hammer2_primary_xops_thread(void *arg)
+{
+	hammer2_thread_t *thr = arg;
+	hammer2_xop_head_t *xop;
+	uint64_t mask;
+	uint32_t flags;
+	uint32_t nflags;
+
+	mask = 1LLU << thr->clindex;
+	hprintf("xops_thread ENTER clindex=%d repidx=%d flags=%08x\n",
+	    thr->clindex, thr->repidx, thr->flags);
+
+	for (;;) {
+		flags = thr->flags;
+		cpu_ccfence();
+
+		if (flags & HAMMER2_THREAD_STOP) {
+			hprintf("xops_thread EXIT clindex=%d repidx=%d\n",
+			    thr->clindex, thr->repidx);
+			break;
+		}
+
+		if (flags & HAMMER2_THREAD_FREEZE) {
+			hammer2_thr_signal2(thr, HAMMER2_THREAD_FROZEN,
+			    HAMMER2_THREAD_FREEZE);
+			continue;
+		}
+		if (flags & HAMMER2_THREAD_UNFREEZE) {
+			hammer2_thr_signal2(thr, 0,
+			    HAMMER2_THREAD_FROZEN | HAMMER2_THREAD_UNFREEZE);
+			continue;
+		}
+		if (flags & HAMMER2_THREAD_FROZEN) {
+			hammer2_thr_wait_any(thr,
+			    HAMMER2_THREAD_UNFREEZE | HAMMER2_THREAD_STOP, 0);
+			continue;
+		}
+		if (flags & HAMMER2_THREAD_REMASTER) {
+			hammer2_thr_signal2(thr, 0, HAMMER2_THREAD_REMASTER);
+			continue;
+		}
+
+		if (flags & HAMMER2_THREAD_XOPQ) {
+			nflags = flags & ~HAMMER2_THREAD_XOPQ;
+			if (!atomic_cmpset_int(&thr->flags, flags, nflags))
+				continue;
+			flags = nflags;
+		}
+		while ((xop = hammer2_xop_next(thr)) != NULL) {
+			if (hammer2_xop_active(xop)) {
+				xop->desc->storage_func((hammer2_xop_t *)xop,
+				    thr->scratch, thr->clindex);
+				hammer2_xop_dequeue(thr, xop);
+				hammer2_xop_retire(xop, mask);
+			} else {
+				hammer2_xop_feed(xop, NULL, thr->clindex,
+				    ECONNABORTED);
+				hammer2_xop_dequeue(thr, xop);
+				hammer2_xop_retire(xop, mask);
+			}
+		}
+
+		/* Wait for work (poll every 30s as a backstop). */
+		nflags = flags | HAMMER2_THREAD_WAITING;
+		tsleep_interlock(&thr->flags, 0);
+		if (atomic_cmpset_int(&thr->flags, flags, nflags))
+			tsleep(&thr->flags, PINTERLOCKED, "h2idle", hz * 30);
+	}
+
+	thr->td = NULL;
+	hammer2_thr_signal(thr, HAMMER2_THREAD_STOPPED);
+	/* thr may be invalid after this point. */
+	kthread_exit(0);
+}
+
+/*
+ * Create the per-node xop helper threads for a pmp.  Idempotent.  Callers
+ * are serialized by the mount lock (hammer2_mntlk).
+ */
+void
+hammer2_xop_helper_create(hammer2_pfs_t *pmp)
+{
+	int i;
+	int j;
+
+	hprintf("xop_helper_create: pmp=%p iroot=%p nchains=%d nthreads=%d\n",
+	    pmp, pmp->iroot,
+	    pmp->iroot ? pmp->iroot->cluster.nchains : -1,
+	    hammer2_xop_nthreads);
+
+	pmp->has_xop_threads = 1;
+	if (pmp->xop_groups == NULL) {
+		pmp->xop_groups = hmalloc(hammer2_xop_nthreads *
+		    sizeof(hammer2_xop_group_t), M_HAMMER2, M_WAITOK | M_ZERO);
+	}
+	for (i = 0; i < pmp->iroot->cluster.nchains; ++i) {
+		for (j = 0; j < hammer2_xop_nthreads; ++j) {
+			if (pmp->xop_groups[j].thrs[i].td)
+				continue;
+			hammer2_thr_create(&pmp->xop_groups[j].thrs[i], pmp,
+			    NULL, "h2xop", i, j, hammer2_primary_xops_thread);
+		}
+	}
+}
+
+/*
+ * Tear down all xop helper threads for a pmp.
+ */
+void
+hammer2_xop_helper_cleanup(hammer2_pfs_t *pmp)
+{
+	int i;
+	int j;
+
+	if (pmp->xop_groups == NULL) {
+		KKASSERT(pmp->has_xop_threads == 0);
+		return;
+	}
+	for (i = 0; i < HAMMER2_MAXCLUSTER; ++i) {
+		for (j = 0; j < hammer2_xop_nthreads; ++j) {
+			if (pmp->xop_groups[j].thrs[i].td)
+				hammer2_thr_delete(&pmp->xop_groups[j].thrs[i]);
+		}
+	}
+	pmp->has_xop_threads = 0;
+	hfree(pmp->xop_groups, M_HAMMER2,
+	    hammer2_xop_nthreads * sizeof(hammer2_xop_group_t));
+	pmp->xop_groups = NULL;
 }

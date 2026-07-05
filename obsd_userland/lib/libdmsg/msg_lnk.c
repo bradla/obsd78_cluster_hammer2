@@ -326,8 +326,23 @@ RB_GENERATE_STATIC(h2span_relay_tree, h2span_relay,
 
 /*
  * Global mutex protects cluster_tree lookups, connq, mediaq.
+ *
+ * OpenBSD: this must be RECURSIVE (libdmsg locks it and then calls helpers
+ * that lock it again).  OpenBSD has no recursive static initializer, so we
+ * initialize it via a constructor that runs before main().
  */
 static pthread_mutex_t cluster_mtx;
+
+static void __attribute__((constructor))
+dmsg_cluster_mtx_init(void)
+{
+	pthread_mutexattr_t mattr;
+
+	pthread_mutexattr_init(&mattr);
+	pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
+	pthread_mutex_init(&cluster_mtx, &mattr);
+	pthread_mutexattr_destroy(&mattr);
+}
 static struct h2span_cluster_tree cluster_tree = RB_INITIALIZER(cluster_tree);
 static struct h2span_conn_queue connq = TAILQ_HEAD_INITIALIZER(connq);
 static struct dmsg_media_queue mediaq = TAILQ_HEAD_INITIALIZER(mediaq);

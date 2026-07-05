@@ -499,8 +499,15 @@ typedef struct hammer2_volconf hammer2_volconf_t;
 #define DMSG_VOLF_CONN_PRI	0x0F	/* select priority 0-15 (15=best) */
 
 struct dmsg_lnk_hammer2_volconf {
-	//dmsg_hdr_t		head;
-	hammer2_volconf_t	copy;	
+	/*
+	 * dmsg_hdr_t head occupies the first 64 bytes.  Declared as a byte
+	 * array because dmsg2.h (which defines dmsg_hdr_t) is included after
+	 * this header.  Do NOT remove it: the dmsg header must occupy offset 0
+	 * or the copy spec below overwrites magic/cmd -- the copyid lands on
+	 * magic, corrupting every VOLCONF frame on the wire.
+	 */
+	uint8_t			head[64];	/* dmsg_hdr_t, 64 bytes */
+	hammer2_volconf_t	copy;
 	int32_t			index;
 	int32_t			unused01;
 	struct uuid			mediaid;

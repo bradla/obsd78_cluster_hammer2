@@ -66,21 +66,26 @@ hammer2_iocom_init(hammer2_dev_t *hmp)
 			 hmp->mmsg, hammer2_rcvdmsg);
 }
 
-/* OpenBSD: HAMMER2 has no iocom / kdmsg support */
+/*
+ * Decommission the kdmsg cluster-messaging layer for this device.  This
+ * stops and JOINS the kdmsg read/write kthreads (kdmsg_iocom_uninit waits
+ * for msgrd_td/msgwr_td to clear) before the caller frees hmp -- otherwise
+ * a still-running kdmsg_iocom_thread_wr faults on the freed iocom->msglk.
+ */
 void
-hammer2_iocom_uninit(hammer2_pfs_t *pmp)
-{
-        (void)pmp;
-}
-
-/*void
 hammer2_iocom_uninit(hammer2_dev_t *hmp)
 {
-	// XXX chain depend deadlck? 
-	if (hmp->iocom.mmsg)
+	/*
+	 * NOTE: DragonFly guards this on hmp->iocom.mmsg, but the OpenBSD port
+	 * never assigns hmp->mmsg (the kmalloc shim ignores it), so that field
+	 * is always NULL.  Guard on the presence of the kdmsg service kthreads
+	 * instead: they exist only after a successful hammer2_cluster_reconnect,
+	 * which is exactly when the iocom (msglk, state trees) is initialized and
+	 * the threads must be stopped+joined before hmp is freed.
+	 */
+	if (hmp->iocom.msgrd_td || hmp->iocom.msgwr_td)
 		kdmsg_iocom_uninit(&hmp->iocom);
 }
-*/
 
 /*
  * Reconnect using the passed file pointer.  The caller must ref the
@@ -217,7 +222,7 @@ hammer2_autodmsg(kdmsg_msg_t *msg)
 		 * to our auto-CONN (typically leaving the transaction open).
 		 */
 		if (msg->any.head.cmd & DMSGF_CREATE) {
-			hprintf("HAMMER2: VOLDATA DUMP\n");
+			/* hprintf("HAMMER2: VOLDATA DUMP\n"); */
 
 			/*
 			 * Dump the configuration stored in the volume header.
@@ -233,7 +238,7 @@ hammer2_autodmsg(kdmsg_msg_t *msg)
 			}
 			hammer2_voldata_unlock(hmp);
 
-			hprintf("HAMMER2: INITIATE SPANs\n");
+			/* hprintf("HAMMER2: INITIATE SPANs\n"); */
 			hammer2_update_spans(hmp, msg->state);
 		}
 		if ((msg->any.head.cmd & DMSGF_DELETE) &&
@@ -370,9 +375,9 @@ hammer2_volconf_update(hammer2_dev_t *hmp, int index)
 	kdmsg_msg_t *msg;
 
 	/* XXX interlock against connection state termination */
-	hprintf("volconf update %p\n", hmp->iocom.conn_state);
+	/* hprintf("volconf update %p\n", hmp->iocom.conn_state); */
 	if (hmp->iocom.conn_state) {
-		hprintf("TRANSMIT VOLCONF VIA OPEN CONN TRANSACTION\n");
+		/* hprintf("TRANSMIT VOLCONF VIA OPEN CONN TRANSACTION\n"); */
 		msg = kdmsg_msg_alloc(hmp->iocom.conn_state,
 				      DMSG_LNK_HAMMER2_VOLCONF,
 				      NULL, NULL);

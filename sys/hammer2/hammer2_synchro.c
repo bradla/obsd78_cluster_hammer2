@@ -376,6 +376,7 @@ hammer2_sync_slaves(hammer2_thread_t *thr, hammer2_inode_t *ip,
 	hammer2_pfs_t *pmp;
 	hammer2_key_t key_next;
 	hammer2_tid_t sync_tid;
+	hammer2_tid_t slave_mtid = 0;	/* TEMP diag: slave chain modify_tid */
 	int needrescan;
 	int want_update;
 	int serror;		/* slave error */
@@ -391,6 +392,18 @@ hammer2_sync_slaves(hammer2_thread_t *thr, hammer2_inode_t *ip,
 	sync_tid = 0;
 	chain = NULL;
 	parent = NULL;
+
+	/*
+	 * A lone node (no cluster peers) has nothing to synchronize.  Bail
+	 * out -- otherwise the ipcluster/scanall XOPs below use
+	 * hammer2_xop_start_except(idx), which excludes our own (only) node,
+	 * dispatches to zero backends, and the collect wedges forever on
+	 * h2coll.  This is what left h2nod-<label> sync threads stuck for
+	 * single-node PFSs (a lone slave, or the LOCAL/DATA PFSs newfs
+	 * creates alongside a cluster slave).
+	 */
+	if (ip->cluster.nchains < 2)
+		return (0);
 
 #if 0
 	/*
@@ -430,6 +443,7 @@ hammer2_sync_slaves(hammer2_thread_t *thr, hammer2_inode_t *ip,
 						    HAMMER2_RESOLVE_ALWAYS |
 						    HAMMER2_RESOLVE_SHARED);
 			want_update = (chain->bref.modify_tid != sync_tid);
+			slave_mtid = chain->bref.modify_tid;	/* TEMP diag */
 			if (chain) {
 				hammer2_chain_unlock(chain);
 				hammer2_chain_drop(chain);
@@ -446,6 +460,12 @@ hammer2_sync_slaves(hammer2_thread_t *thr, hammer2_inode_t *ip,
 
 	if (want_update == 0)
 		return(0);
+
+	/* TEMP sync-engine bringup diagnostic */
+	kprintf("SYNC clindex=%d want_update ip_inum=%016llx sync_tid=%016llx "
+		"slave_mtid=%016llx\n",
+		idx, (unsigned long long)ip->meta.inum,
+		(unsigned long long)sync_tid, (unsigned long long)slave_mtid);
 
 	/*
 	 * The inode is left unlocked during the scan.  Issue a XOP
@@ -701,6 +721,12 @@ hammer2_sync_slaves(hammer2_thread_t *thr, hammer2_inode_t *ip,
 						    HAMMER2_RESOLVE_SHARED);
 
 			KKASSERT(parent != NULL);
+			/* TEMP sync-engine bringup diagnostic */
+			kprintf("SYNC finalize slave=%d ip_inum=%016llx isroot=%d "
+				"sync_tid=%016llx (chain_mtid %016llx -> sync_tid)\n",
+				idx, (unsigned long long)ip->meta.inum, isroot,
+				(unsigned long long)sync_tid,
+				(unsigned long long)chain->bref.modify_tid);
 			nerror = hammer2_sync_replace(
 					thr, parent, chain,
 					sync_tid,
@@ -769,6 +795,10 @@ hammer2_sync_insert(hammer2_thread_t *thr,
 	KKASSERT(chain == NULL);
 
 	chain = NULL;
+	/* TEMP sync-engine bringup diagnostic */
+	kprintf("SYNC insert slave=%d key=%016llx type=%d bytes=%d mtid=%016llx\n",
+		idx, (unsigned long long)focus->bref.key, focus->bref.type,
+		focus->bytes, (unsigned long long)mtid);
 	error = hammer2_chain_create(parentp, &chain, NULL, thr->pmp,
 				     focus->bref.methods,
 				     focus->bref.key, focus->bref.keybits,

@@ -65,10 +65,12 @@ static struct mntopt mopts[] = {
 
 /*
  * Connect to the local cluster controller (the "hammer2 service" daemon),
- * starting it if necessary.  The returned descriptor is handed to the kernel
- * mount so the PFS can participate in the cluster (master/slave, remote).
+ * starting it if necessary, and hand the descriptor to the kernel mount so
+ * the PFS can participate in the cluster.  The local service federates with
+ * remote nodes; the kernel only ever talks to its local service.
  *
- * Failure is non-fatal: a plain local mount proceeds with cluster_fd == -1.
+ * This matches stock DragonFly: the connect is unconditional and failure is
+ * non-fatal -- a plain local mount simply proceeds with cluster_fd == -1.
  */
 static int
 cluster_connect(void)
@@ -160,8 +162,9 @@ main(int argc, char **argv)
 	args.fspec = strcmp(*argp, "") ? canon_dev : NULL;
 
 	/*
-	 * Connect to the cluster controller.  Handles local, master/slave, and
-	 * remote mounts; non-fatal for a plain local mount.
+	 * Connect to the local cluster controller.  Matches stock DragonFly:
+	 * unconditional and non-fatal (cluster_connect() returns -1 on failure,
+	 * in which case the kernel proceeds as a plain local mount).
 	 */
 	args.cluster_fd = cluster_connect();
 

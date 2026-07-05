@@ -82,7 +82,8 @@ struct hammer2_mount_info {
 #define HAMMER2CTL_LIMIT_SCAN_DEPTH	9
 #define HAMMER2CTL_LIMIT_SAVED_CHAINS	10
 #define HAMMER2CTL_ALWAYS_COMPRESS	11
-#define HAMMER2CTL_MAXID		12
+#define HAMMER2CTL_CLUSTER_ENABLE	12
+#define HAMMER2CTL_MAXID		13
 
 #define HAMMER2_NAMES { \
 	{ 0, 0, }, \
@@ -97,6 +98,7 @@ struct hammer2_mount_info {
 	{ "limit_scan_depth", CTLTYPE_INT, }, \
 	{ "limit_saved_chains", CTLTYPE_INT, }, \
 	{ "always_compress", CTLTYPE_INT, }, \
+	{ "cluster_enable", CTLTYPE_INT, }, \
 }
 
 #endif /* !_FS_HAMMER2_MOUNT_H_ */

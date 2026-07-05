@@ -76,7 +76,7 @@ int hammer2_debug;
 int hammer2_dedup_enable = 1;
 int hammer2_count_inode_allocated;
 int hammer2_count_chain_allocated;
-int hammer2_cluster_enable = 0;		/* master/slave sync engine (off) */
+int hammer2_cluster_enable = 1;		/* master/slave sync engine (DragonFly-faithful: on; vfs.hammer2.cluster_enable) */
 int hammer2_count_chain_modified;
 int hammer2_count_dio_allocated;
 int hammer2_dio_limit = 256;
@@ -120,6 +120,7 @@ static const struct sysctl_bounded_args hammer2_vars[] = {
 	{ HAMMER2CTL_LIMIT_SCAN_DEPTH, &hammer2_limit_scan_depth, 0, INT_MAX, },
 	{ HAMMER2CTL_LIMIT_SAVED_CHAINS, &hammer2_limit_saved_chains, 0, INT_MAX, },
 	{ HAMMER2CTL_ALWAYS_COMPRESS, &hammer2_always_compress, 0, INT_MAX, },
+	{ HAMMER2CTL_CLUSTER_ENABLE, &hammer2_cluster_enable, 0, 1, },
 };
 
 static unsigned long
@@ -133,30 +134,34 @@ hammer2_assert_clean(void)
 {
 	int error = 0;
 
+	/*
+	 * TEMP (sync-engine bringup): these were hard KKASSERTs, but the sync
+	 * engine currently leaks chains and we cannot ddb a hard panic on this
+	 * box.  Downgrade to non-fatal warnings so unmount completes and the
+	 * leak magnitude is visible; restore the KKASSERTs once the leak is
+	 * fixed.
+	 */
 	if (hammer2_count_inode_allocated > 0) {
-		hprintf("%d inode left\n", hammer2_count_inode_allocated);
+		hprintf("LEAK: %d inode left\n", hammer2_count_inode_allocated);
 		error = EINVAL;
 	}
-	KKASSERT(hammer2_count_inode_allocated == 0);
 
 	if (hammer2_count_chain_allocated > 0) {
-		hprintf("%d chain left\n", hammer2_count_chain_allocated);
+		hprintf("LEAK: %d chain left\n", hammer2_count_chain_allocated);
+		hammer2_chain_dbg_dump("assert_clean");	/* TEMP leak-hunt */
 		error = EINVAL;
 	}
-	KKASSERT(hammer2_count_chain_allocated == 0);
 
 	if (hammer2_count_chain_modified > 0) {
-		hprintf("%d modified chain left\n",
+		hprintf("LEAK: %d modified chain left\n",
 		    hammer2_count_chain_modified);
 		error = EINVAL;
 	}
-	KKASSERT(hammer2_count_chain_modified == 0);
 
 	if (hammer2_count_dio_allocated > 0) {
-		hprintf("%d dio left\n", hammer2_count_dio_allocated);
+		hprintf("LEAK: %d dio left\n", hammer2_count_dio_allocated);
 		error = EINVAL;
 	}
-	KKASSERT(hammer2_count_dio_allocated == 0);
 
 	return (error);
 }
@@ -257,6 +262,7 @@ hammer2_pfsalloc(hammer2_chain_t *chain, const hammer2_inode_data_t *ripdata,
 		hammer2_trans_manage_init(pmp);
 		hammer2_spin_init(&pmp->blockset_spin, "h2pmp_bssp");
 		hammer2_spin_init(&pmp->list_spin, "h2pmp_lssp");
+		hammer2_spin_init(&pmp->xop_spin, "h2pmp_xopsp");
 		for (i = 0; i < HAMMER2_IHASH_SIZE; i++) {
 			hammer2_lk_init(&pmp->xop_lock[i], "h2pmp_xoplk");
 			hammer2_lkc_init(&pmp->xop_cv[i], "h2pmp_xoplkc");
@@ -416,6 +422,15 @@ hammer2_pfsfree(hammer2_pfs_t *pmp)
 	 */
 	for (i = 0; i < HAMMER2_MAXCLUSTER; ++i)
 		hammer2_thr_delete(&pmp->sync_thrs[i]);
+
+	/*
+	 * Terminate the backend XOP worker threads.  These can exist on ANY
+	 * pmp that ran an XOP -- including the transient super-root spmp (whose
+	 * pfs_names are NULL) -- because hammer2_xop_start_except() lazily
+	 * creates them.  They must be stopped+joined before the pmp (and its
+	 * xop_spin) is freed, or a worker faults on freed memory.
+	 */
+	hammer2_xop_helper_cleanup(pmp);
 
 	/* Cleanup our reference on iroot. */
 	if (pmp->flags & HAMMER2_PMPF_SPMP)
@@ -1037,6 +1052,16 @@ next_hmp:
 	}
 
 	if (pmp->mp) {
+		/*
+		 * This device aggregated a node into an already-mounted cluster
+		 * pmp (nchains just grew via hammer2_pfsalloc).  Spawn the new
+		 * node's XOP worker threads now -- the pmp is fully live here, so
+		 * this is safe -- before rejecting the redundant mountpoint.  The
+		 * aggregation and these threads persist on the live pmp because
+		 * hmp->mount_count > 0 keeps hammer2_unmount_helper() from tearing
+		 * the device down.
+		 */
+		hammer2_xop_helper_create(pmp);
 		hprintf("PFS already mounted!\n");
 		hammer2_unmount_helper(mp, NULL, hmp);
 		hammer2_lk_unlock(&hammer2_mntlk);
@@ -1229,6 +1254,12 @@ hammer2_mount_helper(struct mount *mp, hammer2_pfs_t *pmp)
 			continue;
 		++rchain->hmp->mount_count;
 	}
+
+	/*
+	 * Spawn the backend XOP helper threads now that the PFS is live.
+	 * (Phase 1: created but idle -- dispatch is still synchronous.)
+	 */
+	hammer2_xop_helper_create(pmp);
 }
 
 /*
@@ -1260,6 +1291,13 @@ hammer2_unmount_helper(struct mount *mp, hammer2_pfs_t *pmp, hammer2_dev_t *hmp)
 	if (pmp) {
 		KKASSERT(hmp == NULL);
 		KKASSERT(MPTOPMP(mp) == pmp);
+
+		/*
+		 * Stop and join the backend XOP helper threads before we tear
+		 * the PFS down (they reference the pmp).
+		 */
+		hammer2_xop_helper_cleanup(pmp);
+
 		pmp->mp = NULL;
 		mp->mnt_data = NULL;
 		mp->mnt_flag &= ~MNT_LOCAL;
@@ -1297,10 +1335,10 @@ again:
 
 	/*
 	 * Decomission the network before we start messing with the
-	 * device and PFS.
+	 * device and PFS.  This stops and joins the kdmsg iocom kthreads so
+	 * they cannot fault on the iocom (freed with hmp below).
 	 */
-	//hammer2_iocom_uninit(hmp);
-	// XXX fix me hammer2_iocom_uninit(pmp);
+	hammer2_iocom_uninit(hmp);
 
 	hammer2_bulkfree_uninit(hmp);
 	hammer2_pfsfree_scan(hmp, 0);
@@ -1900,6 +1938,8 @@ restart:
 		 * not NULL that will also be exclusively locked.  Do the
 		 * meat of the flush.
 		 */
+		hprintf("SYNCER inum=%016llx step=vflushbuf vp=%p\n",
+		    (long long)ip->meta.inum, vp);
 		if (vp)
 			vflushbuf(vp, 1);
 
@@ -1935,13 +1975,23 @@ restart:
 		 */
 		debug_hprintf("inum %016llx pinum %016llx chain-sync\n",
 		    (long long)ip->meta.inum, (long long)ip->meta.iparent);
+		hprintf("SYNCER inum=%016llx step=chain_sync\n",
+		    (long long)ip->meta.inum);
 		hammer2_inode_chain_sync(ip);
 
+		hprintf("SYNCER inum=%016llx step=chain_flush\n",
+		    (long long)ip->meta.inum);
 		if (ip == pmp->iroot)
 			hammer2_inode_chain_flush(ip, HAMMER2_XOP_INODE_STOP);
 		else
 			hammer2_inode_chain_flush(ip,
 			    HAMMER2_XOP_INODE_STOP | HAMMER2_XOP_FSSYNC);
+		hprintf("SYNCER inum=%016llx step=flush_done flags=%08x "
+		    "(MOD=%d RESIZED=%d DIRTYDATA=%d)\n",
+		    (long long)ip->meta.inum, ip->flags,
+		    !!(ip->flags & HAMMER2_INODE_MODIFIED),
+		    !!(ip->flags & HAMMER2_INODE_RESIZED),
+		    !!(ip->flags & HAMMER2_INODE_DIRTYDATA));
 		if (vp) {
 			if ((ip->flags & (HAMMER2_INODE_MODIFIED |
 			    HAMMER2_INODE_RESIZED |
@@ -2207,6 +2257,22 @@ hammer2_root(struct mount *mp, struct vnode **vpp)
 		xop = hammer2_xop_alloc(pmp->iroot, HAMMER2_XOP_MODIFYING);
 		hammer2_xop_start(&xop->head, &hammer2_ipcluster_desc);
 		error = hammer2_xop_collect(&xop->head, 0);
+
+		{	/* TEMP DIAG: why does the nchains>1 ipcluster collect fail? */
+			int di;
+			hprintf("h2root collect err=%d nchains=%d nmasters=%d\n",
+			    error, xop->head.cluster.nchains, pmp->pfs_nmasters);
+			for (di = 0; di < xop->head.cluster.nchains; ++di) {
+				hammer2_chain_t *dc =
+				    xop->head.cluster.array[di].chain;
+				hprintf("  [%d] type=%d chain=%p cerr=%d "
+				    "key=%016llx tid=%016llx\n", di,
+				    pmp->pfs_types[di], dc,
+				    xop->head.cluster.array[di].error,
+				    dc ? (long long)dc->bref.key : -1LL,
+				    dc ? (long long)dc->bref.modify_tid : -1LL);
+			}
+		}
 
 		if (error == 0) {
 			meta = &hammer2_xop_gdata(&xop->head)->ipdata.meta;

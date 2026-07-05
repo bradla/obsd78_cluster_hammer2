@@ -123,7 +123,20 @@ dmsg_iocom_init(dmsg_iocom_t *iocom, int sock_fd, int alt_fd,
 	iocom->altmsg_callback = altmsg_func;
 	iocom->usrmsg_callback = usrmsg_func;
 
-	pthread_mutex_init(&iocom->mtx, NULL);
+	/*
+	 * OpenBSD: iocom->mtx must be RECURSIVE.  libdmsg locks it in
+	 * dmsg_iocom_core() and then calls helpers (dmsg_state_cleanuprx ->
+	 * dmsg_msg_free) that lock it again.  DragonFly's default mutex
+	 * tolerates the self-relock; OpenBSD's aborts on it.
+	 */
+	{
+		pthread_mutexattr_t mattr;
+
+		pthread_mutexattr_init(&mattr);
+		pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
+		pthread_mutex_init(&iocom->mtx, &mattr);
+		pthread_mutexattr_destroy(&mattr);
+	}
 	RB_INIT(&iocom->staterd_tree);
 	RB_INIT(&iocom->statewr_tree);
 	TAILQ_INIT(&iocom->txmsgq);
@@ -150,11 +163,29 @@ dmsg_iocom_init(dmsg_iocom_t *iocom, int sock_fd, int alt_fd,
 	 * connection as error'd if it fails.  If this is a pipe it's
 	 * a linkage that we set up ourselves to the filesystem and there
 	 * is no crypto.
+	 *
+	 * OpenBSD: the kernel<->service link is an AF_UNIX socketpair (used in
+	 * place of DragonFly's bidirectional pipe).  It is a socket, but it is
+	 * a local link and must NOT be encrypted -- only network (AF_INET)
+	 * sockets negotiate crypto.
 	 */
 	if (fstat(sock_fd, &st) < 0)
 		assert(0);
-	if (S_ISSOCK(st.st_mode))
-		dmsg_crypto_negotiate(iocom);
+	if (S_ISSOCK(st.st_mode)) {
+		int dom = 0;
+		socklen_t dlen = sizeof(dom);
+
+		/*
+		 * SO_DOMAIN reports the socket's address family even for an
+		 * unbound socketpair (getsockname() may return AF_UNSPEC).
+		 */
+		if (getsockopt(sock_fd, SOL_SOCKET, SO_DOMAIN, &dom, &dlen) == 0 &&
+		    dom == AF_UNIX) {
+			/* local AF_UNIX link (like a pipe): no crypto */
+		} else {
+			dmsg_crypto_negotiate(iocom);
+		}
+	}
 
 	/*
 	 * Make sure our fds are set to non-blocking for the iocom core.

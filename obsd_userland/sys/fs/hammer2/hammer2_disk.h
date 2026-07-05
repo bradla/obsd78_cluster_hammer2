@@ -475,6 +475,13 @@ typedef struct hammer2_volconf hammer2_volconf_t;
 #define DMSG_VOLF_CONN_PRI	0x0F	/* select priority 0-15 (15=best) */
 
 struct dmsg_lnk_hammer2_volconf {
+	/*
+	 * dmsg_hdr_t head occupies the first 64 bytes.  Declared as a byte
+	 * array to match the kernel (sys/hammer2/hammer2_disk.h) exactly and
+	 * to avoid a header ordering dependency.  Do NOT remove it: the dmsg
+	 * header must occupy offset 0 or the copy spec overwrites magic/cmd.
+	 */
+	uint8_t			head[64];	/* dmsg_hdr_t, 64 bytes */
 	hammer2_volconf_t	copy;
 	int32_t			index;
 	int32_t			unused01;
