@@ -989,3 +989,48 @@ tabprintf(int tab, const char *ctl, ...)
 	vprintf(ctl, va);
 	va_end(va);
 }
+
+/*
+ * DEBUGSPAN - connect to a hammer2 service over DMSG and run the CONN/SPAN
+ * protocol (ported from the Linux port; proves the handshake to a peer node).
+ */
+static void
+debugspan_msg_callback(dmsg_msg_t *msg, int unmanaged)
+{
+	switch (msg->tcmd) {
+	case DMSG_LNK_CONN | DMSGF_CREATE:
+		fprintf(stderr, "debugspan: received LNK_CONN\n");
+		break;
+	case DMSG_LNK_SPAN | DMSGF_CREATE:
+		fprintf(stderr, "debugspan: received LNK_SPAN cl=%s\n",
+			msg->any.lnk_span.peer_label);
+		break;
+	default:
+		break;
+	}
+	if (unmanaged)
+		dmsg_msg_reply(msg, DMSG_ERR_NOSUPP);
+}
+
+int
+cmd_debugspan(const char *hostname)
+{
+	dmsg_master_service_info_t *info;
+	pthread_t thread;
+	int fd;
+	void *res;
+
+	fd = dmsg_connect(hostname);
+	if (fd < 0)
+		return 1;
+	printf("debugspan: connected to %s, starting CONN/SPAN\n", hostname);
+	info = malloc(sizeof(*info));
+	bzero(info, sizeof(*info));
+	info->fd = fd;
+	info->detachme = 0;
+	info->label = strdup("debugspan");
+	info->usrmsg_callback = debugspan_msg_callback;
+	pthread_create(&thread, NULL, dmsg_master_service, info);
+	pthread_join(thread, &res);
+	return (0);
+}

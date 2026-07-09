@@ -296,6 +296,7 @@ kdmsg_iocom_autoinitiate(kdmsg_iocom_t *iocom,
 	msg->any.lnk_conn = iocom->auto_lnk_conn;
 	iocom->conn_state = msg->state;
 	kdmsg_state_hold(msg->state);	/* iocom->conn_state */
+	printf("DMSGTRACE autoinit cmd=%08x\n", msg->any.head.cmd);
 	kdmsg_msg_write(msg);
 }
 
@@ -438,6 +439,7 @@ kdmsg_iocom_thread_rd(void *arg)
 			error = EINVAL;
 			break;
 		}
+		printf("DMSGTRACE RD magic=%04x cmd=%08x\n", hdr.magic, hdr.cmd);
 		hbytes = (hdr.cmd & DMSGF_SIZE) * DMSG_ALIGN;
 		if (hbytes < sizeof(hdr) || hbytes > DMSG_HDR_MAX) {
 			kdio_printf(iocom, 1, "bad header size %zu\n", hbytes);
@@ -568,6 +570,7 @@ kdmsg_iocom_thread_wr(void *arg)
 			lockmgr(&iocom->msglk, LK_RELEASE);
 			error = fp_write(iocom->msg_fp, &msg->any,
 					 msg->hdr_size, &res, UIO_SYSSPACE);
+			printf("DMSGTRACE WR cmd=%08x hdr=%zu err=%d res=%zd\n", msg->any.head.cmd, (size_t)msg->hdr_size, error, (ssize_t)res);
 			if (error || res != (ssize_t)msg->hdr_size) {
 				if (error == 0)
 					error = EINVAL;

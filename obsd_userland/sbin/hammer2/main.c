@@ -428,6 +428,12 @@ main(int ac, char **av)
 		ecode = cmd_remote_disconnect(sel_path, av[1]);
 	} else if (strcmp(av[0], "status") == 0) {
 		ecode = cmd_remote_status(sel_path, all_opt);
+	} else if (strcmp(av[0], "debugspan") == 0) {
+		if (ac < 2) {
+			fprintf(stderr, "debugspan: requires hostname\n");
+			usage(1);
+		}
+		ecode = cmd_debugspan(av[1]);
 	} else if (strcmp(av[0], "service") == 0) {
 		/* Start the cluster messaging service daemon. */
 		ecode = cmd_service();
